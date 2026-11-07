@@ -37,8 +37,8 @@
 // commands — do not write a second copy loop.
 module socks5::server;
 
-import std::net, std::net::tcp, std::time;
-import socks5::proto, socks5::relay;
+import std::net, std::net::tcp, std::net::os, std::time;
+import socks5::proto, socks5::relay, socks5::acl;
 
 const Duration BIND_TIMEOUT = (Duration)(30L * time::SEC);
 
@@ -141,30 +141,152 @@ fn proto::Address socket_peer_address(Socket* s)
 	return out;
 }
 
+fn bool sockaddr_to_inet(SockAddrPtr sa, Socklen_t sa_len, InetAddress* out_addr)
+{
+	if (sa_len < 8 || !sa) return false;
+	char[] bytes = ((char*)sa)[:sa_len];
+
+	$if env::DARWIN || env::BSD_FAMILY:
+		AIFamily family = (AIFamily)bytes[1];
+	$else
+		AIFamily family = (AIFamily)*(ushort*)bytes.ptr;
+	$endif
+
+	switch (family)
+	{
+		case os::AF_INET:
+			*out_addr = {
+				.ipv4 = { .a = bytes[4], .b = bytes[5], .c = bytes[6], .d = bytes[7] }
+			};
+			return true;
+
+		case os::AF_INET6:
+			if (sa_len < 24) return false;
+			InetAddress addr = { .is_ipv6 = true };
+			mem::copy(&addr.ipv6, &bytes[8], 16);
+			*out_addr = addr;
+			return true;
+
+		default:
+			return false;
+	}
+}
+
 fn void handle_connect(TcpSocket* conn, proto::Address dst)
 {
 	proto::Address empty_addr = { .atype = IPV4 };
-	char[64] host_buf;
-	String? host = dst_to_host(dst, &host_buf);
-	if (catch host)
+
+	// Case 1: IPV4 or IPV6 literal destination — check ACL before dialing.
+	if (dst.atype == IPV4 || dst.atype == IPV6)
 	{
-		(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty_addr);
+		InetAddress ip;
+		if (dst.atype == IPV6)
+		{
+			ip = { .is_ipv6 = true };
+			mem::copy(&ip.ipv6, &dst.ipv6, 16);
+		}
+		else
+		{
+			ip = { .ipv4 = { .a = dst.ipv4[0], .b = dst.ipv4[1], .c = dst.ipv4[2], .d = dst.ipv4[3] } };
+		}
+
+		if (acl::is_denied(ip))
+		{
+			(void)proto::encode_reply(conn, NOT_ALLOWED, empty_addr);
+			return;
+		}
+
+		char[64] host_buf;
+		String? host = dst_to_host(dst, &host_buf);
+		if (catch host)
+		{
+			(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty_addr);
+			return;
+		}
+
+		TcpSocket? target = tcp::connect(host, (int)dst.port);
+		if (catch err = target)
+		{
+			proto::ReplyCode code = map_connect_error(err);
+			(void)proto::encode_reply(conn, code, empty_addr);
+			return;
+		}
+		defer (void)target.close();
+
+		proto::Address bnd = socket_local_address((Socket*)&target);
+		if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
+
+		relay::relay_bidirectional((Socket*)conn, (Socket*)&target);
 		return;
 	}
 
-	TcpSocket? target = tcp::connect(host, (int)dst.port);
-	if (catch err = target)
+	// Case 2: DOMAIN destination — resolve first, check each candidate address against ACL.
+	if (dst.atype == DOMAIN)
 	{
-		proto::ReplyCode code = map_connect_error(err);
-		(void)proto::encode_reply(conn, code, empty_addr);
+		AddrInfo*? ai = net::addrinfo(dst.domain, (int)dst.port, os::AF_UNSPEC, os::SOCK_STREAM);
+		if (catch err = ai)
+		{
+			proto::ReplyCode code = map_connect_error(err);
+			(void)proto::encode_reply(conn, code, empty_addr);
+			return;
+		}
+		defer os::freeaddrinfo(ai);
+
+		bool any_allowed = false;
+		fault last_connect_err = net::CONNECT_FAILED;
+		TcpSocket real_target = {};
+		bool connected = false;
+
+		for (AddrInfo* curr = ai; curr != null; curr = curr.ai_next)
+		{
+			InetAddress cand;
+			if (!sockaddr_to_inet(curr.ai_addr, curr.ai_addrlen, &cand)) continue;
+			if (acl::is_denied(cand)) continue;
+
+			any_allowed = true;
+
+			// Temporarily isolate curr from the chain so connect_to only dials this candidate
+			AddrInfo* next = curr.ai_next;
+			curr.ai_next = null;
+			TcpSocket? res = tcp::connect_to(curr);
+			curr.ai_next = next;
+
+			if (catch err = res)
+			{
+				last_connect_err = err;
+				continue;
+			}
+
+			real_target = res;
+			connected = true;
+			break;
+		}
+
+		if (!any_allowed)
+		{
+			// Every candidate was denied by ACL ruleset (e.g. evil.com -> 127.0.0.1)
+			(void)proto::encode_reply(conn, NOT_ALLOWED, empty_addr);
+			return;
+		}
+
+		if (!connected)
+		{
+			// Candidates were allowed, but dialing failed
+			proto::ReplyCode code = map_connect_error(last_connect_err);
+			(void)proto::encode_reply(conn, code, empty_addr);
+			return;
+		}
+		defer (void)real_target.close();
+
+		proto::Address bnd = socket_local_address((Socket*)&real_target);
+		if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
+
+		relay::relay_bidirectional((Socket*)conn, (Socket*)&real_target);
 		return;
 	}
-	defer (void)target.close();
 
-	proto::Address bnd = socket_local_address((Socket*)&target);
-	if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
-
-	relay::relay_bidirectional((Socket*)conn, (Socket*)&target);
+	// Case 3: Unsupported address type
+	(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty_addr);
 }
 
 fn void handle_bind(TcpSocket* conn, proto::Address dst)

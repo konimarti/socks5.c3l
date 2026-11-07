@@ -39,9 +39,13 @@ module socks5::server @test;
 
 import std::net, std::net::tcp, std::thread, std::io;
 import socks5::proto;
+import socks5::acl;
 
 fn void test_connect_ipv4_success()
 {
+	acl::configure(true);
+	defer acl::configure(false);
+
 	// 1. Target listener
 	TcpServerSocket target_server = tcp::listen("127.0.0.1", 0, 1, REUSEADDR)!!;
 	defer (void)target_server.close();
@@ -94,6 +98,9 @@ fn void test_connect_ipv4_success()
 
 fn void test_connect_domain_success()
 {
+	acl::configure(true);
+	defer acl::configure(false);
+
 	TcpServerSocket target_server = tcp::listen("127.0.0.1", 0, 1, REUSEADDR)!!;
 	defer (void)target_server.close();
 	ushort target_port = target_server.local_port()!!;
@@ -137,6 +144,9 @@ fn void test_connect_domain_success()
 
 fn void test_connect_connection_refused()
 {
+	acl::configure(true);
+	defer acl::configure(false);
+
 	TcpServerSocket temp_server = tcp::listen("127.0.0.1", 0, 1, REUSEADDR)!!;
 	ushort dead_port = temp_server.local_port()!!;
 	temp_server.close()!!;
@@ -159,6 +169,54 @@ fn void test_connect_connection_refused()
 
 	proto::Reply rep = proto::decode_reply((InStream)&client, tmem)!!;
 	assert(rep.code == CONNECTION_REFUSED, "expected CONNECTION_REFUSED");
+}
+
+fn void test_connect_acl_denied_ipv4()
+{
+	acl::configure(false);
+
+	TcpServerSocket proxy_server = tcp::listen("127.0.0.1", 0, 1, REUSEADDR)!!;
+	defer (void)proxy_server.close();
+	ushort proxy_port = proxy_server.local_port()!!;
+
+	TcpSocket client = tcp::connect("127.0.0.1", proxy_port)!!;
+	defer (void)client.close();
+	TcpSocket proxy_conn = tcp::accept(&proxy_server)!!;
+	defer (void)proxy_conn.close();
+
+	proto::Address dst = {
+		.atype = IPV4,
+		.ipv4 = { 127, 0, 0, 1 },
+		.port = 8080,
+	};
+	handle_connect(&proxy_conn, dst);
+
+	proto::Reply rep = proto::decode_reply((InStream)&client, tmem)!!;
+	assert(rep.code == NOT_ALLOWED, "expected NOT_ALLOWED for loopback IPv4");
+}
+
+fn void test_connect_acl_denied_domain()
+{
+	acl::configure(false);
+
+	TcpServerSocket proxy_server = tcp::listen("127.0.0.1", 0, 1, REUSEADDR)!!;
+	defer (void)proxy_server.close();
+	ushort proxy_port = proxy_server.local_port()!!;
+
+	TcpSocket client = tcp::connect("127.0.0.1", proxy_port)!!;
+	defer (void)client.close();
+	TcpSocket proxy_conn = tcp::accept(&proxy_server)!!;
+	defer (void)proxy_conn.close();
+
+	proto::Address dst = {
+		.atype = DOMAIN,
+		.domain = "127.0.0.1",
+		.port = 8080,
+	};
+	handle_connect(&proxy_conn, dst);
+
+	proto::Reply rep = proto::decode_reply((InStream)&client, tmem)!!;
+	assert(rep.code == NOT_ALLOWED, "expected NOT_ALLOWED for domain resolving to loopback");
 }
 
 

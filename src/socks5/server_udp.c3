@@ -48,7 +48,7 @@
 module socks5::server;
 
 import std::net, std::net::tcp, std::net::os, std::io, std::time, libc;
-import socks5::proto, socks5::relay;
+import socks5::proto, socks5::relay, socks5::acl;
 
 extern fn sz recvfrom(NativeSocket socket, void* buffer, usz length, CInt flags, SockAddrPtr address, Socklen_t* address_len);
 extern fn sz sendto(NativeSocket socket, void* buffer, usz length, CInt flags, SockAddrPtr address, Socklen_t address_len);
@@ -102,9 +102,9 @@ fn bool decode_sockaddr_to_proto(char[] storage, proto::Address* out_addr)
 	}
 }
 
-fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_len)
+fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_len, InetAddress* out_ip, bool* out_is_v6)
 {
-	switch (addr.atype)
+	switch (dst.atype)
 	{
 		case IPV4:
 			if (out_sa.len < 16) return false;
@@ -115,10 +115,13 @@ fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_l
 			$else
 				*(ushort*)out_sa.ptr = (ushort)os::AF_INET;
 			$endif
-			out_sa[2] = (char)(addr.port >> 8);
-			out_sa[3] = (char)(addr.port & 0xff);
-			mem::copy(&out_sa[4], &addr.ipv4, 4);
+			out_sa[2] = (char)(dst.port >> 8);
+			out_sa[3] = (char)(dst.port & 0xff);
+			mem::copy(&out_sa[4], &dst.ipv4, 4);
 			*out_len = 16;
+			*out_is_v6 = false;
+			out_ip.is_ipv6 = false;
+			out_ip.ipv4 = { .a = dst.ipv4[0], .b = dst.ipv4[1], .c = dst.ipv4[2], .d = dst.ipv4[3] };
 			return true;
 
 		case IPV6:
@@ -130,21 +133,52 @@ fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_l
 			$else
 				*(ushort*)out_sa.ptr = (ushort)os::AF_INET6;
 			$endif
-			out_sa[2] = (char)(addr.port >> 8);
-			out_sa[3] = (char)(addr.port & 0xff);
-			mem::copy(&out_sa[8], &addr.ipv6, 16);
+			out_sa[2] = (char)(dst.port >> 8);
+			out_sa[3] = (char)(dst.port & 0xff);
+			mem::copy(&out_sa[8], &dst.ipv6, 16);
 			*out_len = 28;
+			*out_is_v6 = true;
+			out_ip.is_ipv6 = true;
+			mem::copy(&out_ip.ipv6, &dst.ipv6, 16);
 			return true;
 
 		case DOMAIN:
-			AddrInfo*? ai = net::addrinfo(addr.domain, (int)addr.port, os::AF_UNSPEC, os::SOCK_DGRAM);
+			AddrInfo*? ai = net::addrinfo(dst.domain, (int)dst.port, os::AF_UNSPEC, os::SOCK_DGRAM);
 			if (catch ai) return false;
 			defer os::freeaddrinfo(ai);
 			if ((usz)ai.ai_addrlen > out_sa.len) return false;
+
+			char* sa_ptr = (char*)ai.ai_addr;
+			if (ai.ai_family == os::AF_INET6)
+			{
+				if (ai.ai_addrlen < 28) return false;
+				*out_is_v6 = true;
+				out_ip.is_ipv6 = true;
+				mem::copy(&out_ip.ipv6, &sa_ptr[8], 16);
+			}
+			else if (ai.ai_family == os::AF_INET)
+			{
+				if (ai.ai_addrlen < 16) return false;
+				*out_is_v6 = false;
+				out_ip.is_ipv6 = false;
+				out_ip.ipv4 = { .a = sa_ptr[4], .b = sa_ptr[5], .c = sa_ptr[6], .d = sa_ptr[7] };
+			}
+			else
+			{
+				return false;
+			}
+
 			*out_len = ai.ai_addrlen;
 			mem::copy(out_sa.ptr, (void*)ai.ai_addr, (sz)ai.ai_addrlen);
 			return true;
 	}
+}
+
+fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_len)
+{
+	InetAddress dummy_ip;
+	bool dummy_is_v6;
+	return resolve_destination(addr, out_sa, out_len, &dummy_ip, &dummy_is_v6);
 }
 
 fn Socket? bind_udp_local(InetAddress addr)
@@ -256,17 +290,42 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 
 	if (catch proto::encode_reply(conn, SUCCEEDED, bnd_addr)) return;
 
-	InetAddress any_addr;
-	if (local_addr.is_ipv6)
+	InetAddress any_v4;
+	Socket? v4_res = bind_udp_local(any_v4);
+	Socket target_v4 = {};
+	bool has_v4 = false;
+	if (catch v4_res)
 	{
-		any_addr.is_ipv6 = true;
+		has_v4 = false;
 	}
-	Socket? target_sock = bind_udp_local(any_addr);
-	if (catch target_sock) return;
-	defer (void)target_sock.close();
+	else
+	{
+		target_v4 = v4_res;
+		has_v4 = true;
+	}
+
+	InetAddress any_v6 = { .is_ipv6 = true };
+	Socket? v6_res = bind_udp_local(any_v6);
+	Socket target_v6 = {};
+	bool has_v6 = false;
+	if (catch v6_res)
+	{
+		has_v6 = false;
+	}
+	else
+	{
+		target_v6 = v6_res;
+		has_v6 = true;
+	}
+
+	if (!has_v4 && !has_v6) return;
+
+	defer if (has_v4) (void)target_v4.close();
+	defer if (has_v6) (void)target_v6.close();
 
 	(void)client_sock.sock.set_non_blocking(true);
-	(void)target_sock.sock.set_non_blocking(true);
+	if (has_v4) (void)target_v4.sock.set_non_blocking(true);
+	if (has_v6) (void)target_v6.sock.set_non_blocking(true);
 	(void)conn.sock.set_non_blocking(true);
 
 	bool client_pinned = false;
@@ -276,10 +335,12 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 
 	char[RECV_BUF_SIZE] recv_buf;
 
-	Poll[3] polls = {
-		{ .socket = conn.sock,        .events = ANY_READ },
-		{ .socket = client_sock.sock, .events = ANY_READ },
-		{ .socket = target_sock.sock, .events = ANY_READ },
+	NativeSocket invalid_sock = (NativeSocket)-1;
+	Poll[4] polls = {
+		{ .socket = conn.sock,                               .events = ANY_READ },
+		{ .socket = client_sock.sock,                        .events = ANY_READ },
+		{ .socket = has_v4 ? target_v4.sock : invalid_sock,  .events = ANY_READ },
+		{ .socket = has_v6 ? target_v6.sock : invalid_sock,  .events = ANY_READ },
 	};
 
 	while (true)
@@ -329,9 +390,21 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 							{
 								char[128] target_sa;
 								Socklen_t target_sa_len = 128;
-								if (address_to_sockaddr(dgram.dst, target_sa[0..], &target_sa_len))
+								InetAddress target_ip;
+								bool target_is_v6;
+								if (resolve_destination(dgram.dst, target_sa[0..], &target_sa_len, &target_ip, &target_is_v6))
 								{
-									(void)sendto(target_sock.sock, dgram.payload.ptr, dgram.payload.len, 0, (SockAddrPtr)&target_sa, target_sa_len);
+									if (!acl::is_denied(target_ip))
+									{
+										if (target_is_v6)
+										{
+											if (has_v6) (void)sendto(target_v6.sock, dgram.payload.ptr, dgram.payload.len, 0, (SockAddrPtr)&target_sa, target_sa_len);
+										}
+										else
+										{
+											if (has_v4) (void)sendto(target_v4.sock, dgram.payload.ptr, dgram.payload.len, 0, (SockAddrPtr)&target_sa, target_sa_len);
+										}
+									}
 								}
 							}
 						}
@@ -340,11 +413,33 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 			}
 
 			// Handle datagram from target -> wrap and forward to client.
-			if (poll_readable(polls[2]))
+			if (has_v4 && poll_readable(polls[2]))
 			{
 				char[128] from_sa;
 				Socklen_t from_len = (Socklen_t)from_sa.len;
-				sz got = recvfrom(target_sock.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
+				sz got = recvfrom(target_v4.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
+				if (got >= 0 && client_pinned)
+				{
+					proto::Address target_addr;
+					if (decode_sockaddr_to_proto(from_sa[:from_len], &target_addr))
+					{
+						char[]? pkt = proto::encode_udp_header(tmem, target_addr, recv_buf[:got]);
+						if (catch pkt)
+						{
+							// failed to encode: drop
+						}
+						else
+						{
+							(void)sendto(client_sock.sock, pkt.ptr, pkt.len, 0, (SockAddrPtr)&client_sa, client_sa_len);
+						}
+					}
+				}
+			}
+			if (has_v6 && poll_readable(polls[3]))
+			{
+				char[128] from_sa;
+				Socklen_t from_len = (Socklen_t)from_sa.len;
+				sz got = recvfrom(target_v6.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
 				if (got >= 0 && client_pinned)
 				{
 					proto::Address target_addr;

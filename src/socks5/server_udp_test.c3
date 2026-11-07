@@ -22,10 +22,13 @@ fn int run_associate_thread(void* arg)
 module socks5::server @test;
 
 import std::net, std::net::tcp, std::net::os, std::thread, std::io, std::time, libc;
-import socks5::proto;
+import socks5::proto, socks5::acl;
 
 fn void test_udp_associate_forward_and_reply_and_teardown()
 {
+	acl::configure(true);
+	defer acl::configure(false);
+
 	TcpServerSocket listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
 	defer (void)listener.close();
 	ushort proxy_tcp_port = listener.local_port()!!;
@@ -105,6 +108,9 @@ fn void test_udp_associate_forward_and_reply_and_teardown()
 
 fn void test_udp_associate_source_pinning_and_fragment_drop()
 {
+	acl::configure(true);
+	defer acl::configure(false);
+
 	TcpServerSocket listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
 	defer (void)listener.close();
 	ushort proxy_tcp_port = listener.local_port()!!;
@@ -170,6 +176,143 @@ fn void test_udp_associate_source_pinning_and_fragment_drop()
 	assert(n == 0, "target must not receive fragmented datagram");
 
 	// Teardown
+	client_tcp.close()!!;
+	t.join()!!;
+	conn.close()!!;
+}
+
+fn void test_udp_associate_cross_family_ipv4_to_ipv6()
+{
+	acl::configure(true);
+	defer acl::configure(false);
+
+	// IPv4 TCP control connection
+	TcpServerSocket listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
+	defer (void)listener.close();
+	ushort proxy_tcp_port = listener.local_port()!!;
+
+	TcpSocket client_tcp = tcp::connect("127.0.0.1", (int)proxy_tcp_port)!!;
+	TcpSocket conn = tcp::accept(&listener)!!;
+
+	proto::Address hint = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
+	AssociateArgs args = { .conn = &conn, .client_hint = hint };
+	Thread t;
+	t.create(&run_associate_thread, &args)!!;
+
+	char[3] reply_head;
+	io::read_all(&client_tcp, &reply_head)!!;
+	assert(reply_head[1] == 0x00, "reply succeeded");
+	proto::Address bnd = proto::decode_address(&client_tcp, tmem)!!;
+	assert(bnd.atype == IPV4, "proxy bound IPv4");
+
+	// Setup IPv6 target socket on ::1
+	Socket target = bind_udp_socket("::1", 0, os::AF_INET6)!!;
+	defer (void)target.close();
+	(void)target.sock.set_non_blocking(true);
+	ushort target_port = target.local_port()!!;
+
+	// Setup IPv4 client UDP socket
+	Socket client_udp = bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
+	defer (void)client_udp.close();
+
+	char[128] proxy_sa;
+	Socklen_t proxy_sa_len = 0;
+	bool ok = address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	assert(ok, "convert bnd to sockaddr");
+
+	// Destination is IPv6 ::1:target_port
+	proto::Address target_dst = { .atype = IPV6, .port = target_port };
+	target_dst.ipv6 = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+	char[] client_msg = "hello ipv6 target from ipv4 client";
+	char[] req_pkt = proto::encode_udp_header(tmem, target_dst, client_msg)!!;
+
+	sz sent = sendto(client_udp.sock, req_pkt.ptr, req_pkt.len, 0, (SockAddrPtr)&proxy_sa, proxy_sa_len);
+	assert(sent == (sz)req_pkt.len, "sent datagram to proxy");
+
+	// Target on IPv6 should receive the forwarded payload
+	Poll[1] tpolls = { { .socket = target.sock, .events = ANY_READ } };
+	ulong n = net::poll(tpolls[0..], time::sec(1))!!;
+	assert(n > 0, "target must receive forwarded datagram on IPv6");
+
+	char[256] target_recv_buf;
+	char[128] from_proxy_sa;
+	Socklen_t from_proxy_len = (Socklen_t)from_proxy_sa.len;
+	sz got = recvfrom(target.sock, &target_recv_buf, target_recv_buf.len, 0, (SockAddrPtr)&from_proxy_sa, &from_proxy_len);
+	assert(got == (sz)client_msg.len, "target received correct length");
+	assert((String)target_recv_buf[:got] == (String)client_msg, "target received correct payload");
+
+	// Target replies to proxy
+	char[] target_reply = "hello ipv4 client from ipv6 target";
+	sent = sendto(target.sock, target_reply.ptr, target_reply.len, 0, (SockAddrPtr)&from_proxy_sa, from_proxy_len);
+	assert(sent == (sz)target_reply.len, "target sent reply");
+
+	// Client receives SOCKS5-encapsulated reply
+	char[256] client_recv_buf;
+	char[128] from_sa;
+	Socklen_t from_len = (Socklen_t)from_sa.len;
+	got = recvfrom(client_udp.sock, &client_recv_buf, client_recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
+	assert(got > 0, "client received reply datagram");
+
+	proto::UdpDatagram reply_dgram = proto::decode_udp_header(client_recv_buf[:got], tmem)!!;
+	assert((String)reply_dgram.payload == (String)target_reply, "client received reply payload");
+	assert(reply_dgram.dst.atype == IPV6, "reply dst atype is IPV6");
+	assert(reply_dgram.dst.port == target_port, "reply dst port matches target");
+	assert(reply_dgram.dst.ipv6 == target_dst.ipv6, "reply dst ip matches target ::1");
+
+	client_tcp.close()!!;
+	t.join()!!;
+	conn.close()!!;
+}
+
+fn void test_udp_associate_acl_denies_private_destination()
+{
+	// Default ACL denies loopback/private/link-local
+	acl::configure(false);
+
+	TcpServerSocket listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
+	defer (void)listener.close();
+	ushort proxy_tcp_port = listener.local_port()!!;
+
+	TcpSocket client_tcp = tcp::connect("127.0.0.1", (int)proxy_tcp_port)!!;
+	TcpSocket conn = tcp::accept(&listener)!!;
+
+	proto::Address hint = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
+	AssociateArgs args = { .conn = &conn, .client_hint = hint };
+	Thread t;
+	t.create(&run_associate_thread, &args)!!;
+
+	char[3] reply_head;
+	io::read_all(&client_tcp, &reply_head)!!;
+	assert(reply_head[1] == 0x00, "reply succeeded");
+	proto::Address bnd = proto::decode_address(&client_tcp, tmem)!!;
+
+	// Setup UDP target socket listening on 127.0.0.1 (loopback, denied by default ACL)
+	Socket target = bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
+	defer (void)target.close();
+	(void)target.sock.set_non_blocking(true);
+	ushort target_port = target.local_port()!!;
+
+	Socket client_udp = bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
+	defer (void)client_udp.close();
+
+	char[128] proxy_sa;
+	Socklen_t proxy_sa_len = 0;
+	bool ok = address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	assert(ok, "convert bnd to sockaddr");
+
+	proto::Address target_dst = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
+	char[] client_msg = "this datagram should be denied by ACL";
+	char[] req_pkt = proto::encode_udp_header(tmem, target_dst, client_msg)!!;
+
+	sz sent = sendto(client_udp.sock, req_pkt.ptr, req_pkt.len, 0, (SockAddrPtr)&proxy_sa, proxy_sa_len);
+	assert(sent == (sz)req_pkt.len, "sent datagram to proxy");
+
+	// Poll target: must timeout with 0 packets received because 127.0.0.1 is denied
+	Poll[1] tpolls = { { .socket = target.sock, .events = ANY_READ } };
+	ulong n = net::poll(tpolls[0..], time::ms(100))!!;
+	assert(n == 0, "target must not receive datagram destined to ACL-denied address");
+
+	// Association remains functional and shuts down cleanly on TCP close
 	client_tcp.close()!!;
 	t.join()!!;
 	conn.close()!!;
