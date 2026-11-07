@@ -1,0 +1,19 @@
+{
+	"authors": [ "Koni Marti <koni.marti@gmail.com>" ],
+	"version": "0.1.0",
+	"output": "build",
+	"sources": [ "src/**" ],
+	"targets": {
+		"test": {
+			"type": "executable"
+		},
+		"socks5-server": {
+			"type": "executable",
+			"sources": [ "cmd/socks5-server/*" ]
+		},
+		"socks5-client": {
+			"type": "executable",
+			"sources": [ "cmd/socks5-client/*" ]
+		}
+	}
+}
