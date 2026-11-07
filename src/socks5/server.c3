@@ -54,6 +54,7 @@ fn void ConnLimiter.init(&self, usz max)
 {
 	self.lock.init()!!;
 	self.max = max;
+	self.current = 0;
 }
 
 fn bool ConnLimiter.try_acquire(&self)
@@ -69,7 +70,12 @@ fn void ConnLimiter.release(&self)
 {
 	self.lock.lock()!!;
 	defer self.lock.unlock();
-	self.current--;
+	// A release() with no matching acquire (a future bug, not a case
+	// that exists today) would otherwise underflow this usz to
+	// usz::max, which permanently locks try_acquire() into rejecting
+	// every connection. Guarding costs nothing and turns that failure
+	// mode into a no-op instead.
+	if (self.current > 0) self.current--;
 }
 
 struct Server

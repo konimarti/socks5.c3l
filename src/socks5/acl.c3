@@ -32,7 +32,8 @@ const CidrV4[6] DEFAULT_DENIED_V4 = {
 	{ { 192, 168, 0, 0 }, 16 }, // RFC 1918 private
 };
 
-const CidrV6[3] DEFAULT_DENIED_V6 = {
+const CidrV6[4] DEFAULT_DENIED_V6 = {
+	{ { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 128 },     // :: unspecified (routes to loopback)
 	{ { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, 128 },     // ::1 loopback
 	{ { 0xfc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 7 },    // fc00::/7 unique local
 	{ { 0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, 10 }, // fe80::/10 link-local
@@ -52,6 +53,10 @@ fn void configure(bool allow_private)
 
 fn bool matches_v4(char[4] addr, CidrV4 c)
 {
+	// `32 - prefix` must never reach 32: shifting a 32-bit value by 32
+	// is out-of-range and panics (verified empirically) rather than
+	// producing the all-zero mask a /0 match needs.
+	if (c.prefix == 0) return true;
 	uint mask = c.prefix >= 32 ? uint::max : ~(uint)0 << (32 - c.prefix);
 	uint a = ((uint)addr[0] << 24) | ((uint)addr[1] << 16) | ((uint)addr[2] << 8) | (uint)addr[3];
 	uint n = ((uint)c.net[0] << 24) | ((uint)c.net[1] << 16) | ((uint)c.net[2] << 8) | (uint)c.net[3];
@@ -74,6 +79,8 @@ fn bool matches_v6(char[16] addr, CidrV6 c)
 	return true;
 }
 
+const char[12] IPV4_MAPPED_PREFIX = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+
 <*
  True if `addr` is in the default-denied set and the policy hasn't
  disabled the check (configure(true)).
@@ -85,6 +92,26 @@ fn bool is_denied(InetAddress addr)
 	{
 		char[16] raw;
 		mem::copy(&raw, &addr.ipv6, 16);
+
+		// RFC 4291 section 2.5.5.2: ::ffff:a.b.c.d is an IPv4-mapped
+		// IPv6 address — a dual-stack kernel routes it exactly like
+		// the embedded IPv4 address, so it must be checked against
+		// the IPv4 list, not just the (disjoint) IPv6 one. Without
+		// this, ::ffff:127.0.0.1 reaches loopback despite 127.0.0.0/8
+		// being denied — confirmed by two independent reviews against
+		// the real running server.
+		bool is_v4_mapped = true;
+		for (usz i = 0; i < 12; i++)
+		{
+			if (raw[i] != IPV4_MAPPED_PREFIX[i]) { is_v4_mapped = false; break; }
+		}
+		if (is_v4_mapped)
+		{
+			char[4] embedded_v4 = { raw[12], raw[13], raw[14], raw[15] };
+			foreach (CidrV4 c : DEFAULT_DENIED_V4) if (matches_v4(embedded_v4, c)) return true;
+			return false;
+		}
+
 		foreach (CidrV6 c : DEFAULT_DENIED_V6) if (matches_v6(raw, c)) return true;
 		return false;
 	}

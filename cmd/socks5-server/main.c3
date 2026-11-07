@@ -20,46 +20,78 @@ fn bool equal_constant_time(String a, String b)
 }
 
 <*
- Checks every account rather than returning on the first match, and
- compares with safe_compare rather than `==`, so response latency
- doesn't leak which account (or how many leading bytes) matched.
+ Checks every account rather than returning on the first match. Both
+ comparisons for a given account are always made (not short-circuited
+ by `&&` on the first), and both use safe_compare rather than `==`, so
+ response latency doesn't leak which account — or even whether the
+ username alone matched — any faster than a full miss.
 *>
 fn bool check_credentials(String username, String password)
 {
 	bool found = false;
 	for (usz i = 0; i < g_credential_count; i++)
 	{
-		if (equal_constant_time(g_credentials[i].username, username)
-			&& equal_constant_time(g_credentials[i].password, password))
-		{
-			found = true;
-		}
+		bool user_ok = equal_constant_time(g_credentials[i].username, username);
+		bool pass_ok = equal_constant_time(g_credentials[i].password, password);
+		if (user_ok && pass_ok) found = true;
 	}
 	return found;
 }
 
 <*
- Adds one "NAME:PASS" account. Returns false (and logs nothing itself —
- the caller knows the source) on a malformed spec or a full table.
+ Adds one "NAME:PASS" account. Returns false on a malformed spec, an
+ out-of-range length, or a full table — logging is the caller's job,
+ since only the caller knows which source (CLI flag, file, env var)
+ a given spec came from.
+ @param spec : "NAME:PASS; both parts must be 1..255 bytes, the RFC 1929 ULEN/PLEN range"
 *>
 fn bool add_credential(String spec)
 {
 	sz? colon = spec.index_of_char(':');
 	if (catch colon) return false;
+	String username = spec[:colon];
+	String password = spec[colon + 1..];
+	if (username.len == 0 || username.len > 255) return false;
+	if (password.len == 0 || password.len > 255) return false;
 	if (g_credential_count >= g_credentials.len) return false;
-	g_credentials[g_credential_count] = { .username = spec[:colon], .password = spec[colon + 1..] };
+	g_credentials[g_credential_count] = { .username = username, .password = password };
 	g_credential_count++;
 	return true;
 }
 
 <*
- Parses accounts out of a blob of text: one "NAME:PASS" per line or
- comma-separated on one line (so the same parser covers --users-file,
- a .env line's value, and a real multi-line or comma-joined
- SOCKS5_USERS environment variable). Blank entries and lines starting
- with '#' are skipped.
+ Parses accounts out of a blob of text, one "NAME:PASS" per line.
+ Blank lines and lines starting with '#' are skipped. Used for
+ --users-file: no comma-splitting here, unlike load_users_list below —
+ a file is the one source where a password containing a literal comma
+ is plausible, and silently truncating it at the comma would be a
+ real (not just theoretical) way to lock an account out.
 *>
-fn usz load_users_text(String text)
+fn usz load_users_lines(String text)
+{
+	usz added = 0;
+	foreach (String line : text.tsplit("\n"))
+	{
+		String trimmed = line.trim();
+		if (trimmed.len == 0 || trimmed[0] == '#') continue;
+		if (g_credential_count >= g_credentials.len)
+		{
+			io::printn("warning: too many accounts, ignoring the rest of the users file");
+			break;
+		}
+		if (add_credential(trimmed)) { added++; }
+		else { io::printfn("warning: skipping malformed account spec: %s", trimmed); }
+	}
+	return added;
+}
+
+<*
+ Parses accounts out of a comma- or newline-separated list: used for
+ the SOCKS5_USERS environment variable and a .env file's SOCKS5_USERS=
+ line, where the whole list is conventionally one shell-friendly value
+ rather than a file with one account per line.
+*>
+fn usz load_users_list(String text)
 {
 	usz added = 0;
 	foreach (String line : text.tsplit("\n"))
@@ -70,22 +102,43 @@ fn usz load_users_text(String text)
 		{
 			String trimmed = entry.trim();
 			if (trimmed.len == 0) continue;
-			if (add_credential(trimmed)) added++;
+			if (g_credential_count >= g_credentials.len)
+			{
+				io::printn("warning: too many accounts, ignoring the rest of SOCKS5_USERS");
+				return added;
+			}
+			if (add_credential(trimmed)) { added++; }
+			else { io::printfn("warning: skipping malformed account spec: %s", trimmed); }
 		}
 	}
 	return added;
 }
 
 <*
+ Strips one matching pair of leading/trailing quotes (' or "), the way
+ a shell would when sourcing a .env file — we don't source it, so we
+ have to do this ourselves or a quoted SOCKS5_USERS="..." value ends
+ up with the quote characters baked into the first and last account.
+*>
+fn String strip_quotes(String s)
+{
+	if (s.len < 2) return s;
+	char first = s[0];
+	char last = s[s.len - 1];
+	if ((first == '"' || first == '\'') && first == last) return s[1:s.len - 2];
+	return s;
+}
+
+<*
  Loads a dotenv-style file (KEY=VALUE per line) and, if it defines
- SOCKS5_USERS, parses that value the same way load_users_text does.
- Other keys are ignored — this isn't a general dotenv loader, just
- enough to pull credentials from a .env file without a shell sourcing
- it into the real environment first.
+ SOCKS5_USERS, parses that value the same way the environment variable
+ is parsed. Other keys are ignored — this isn't a general dotenv
+ loader, just enough to pull credentials from a .env file without a
+ shell sourcing it into the real environment first.
 *>
 fn usz load_env_file(String path)
 {
-	char[]? data = file::load_temp(path);
+	char[]? data = file::load(mem, path);
 	if (catch data)
 	{
 		io::printfn("could not read env file %s", path);
@@ -100,7 +153,7 @@ fn usz load_env_file(String path)
 		if (catch eq) continue;
 		if (trimmed[:eq] == "SOCKS5_USERS")
 		{
-			added += load_users_text(trimmed[eq + 1..]);
+			added += load_users_list(strip_quotes(trimmed[eq + 1..]));
 		}
 	}
 	return added;
@@ -139,7 +192,11 @@ fn void main(String[] args)
 		return;
 	}
 
-	if (try env_users = env::tget_var("SOCKS5_USERS")) load_users_text(env_users);
+	// Loaded with the persistent allocator (`mem`), not `tmem`: these
+	// slices are kept in g_credentials for the life of the process,
+	// and a temp allocator's contents aren't guaranteed to survive
+	// past the scope that created them.
+	if (try env_users = env::get_var(mem, "SOCKS5_USERS")) load_users_list(env_users);
 
 	bool allow_no_auth = false;
 	bool allow_private = false;
@@ -171,13 +228,13 @@ fn void main(String[] args)
 		}
 		if (args[i] == "--users-file" && i + 1 < args.len)
 		{
-			char[]? data = file::load_temp(args[i + 1]);
+			char[]? data = file::load(mem, args[i + 1]);
 			if (catch data)
 			{
 				io::printfn("could not read users file: %s", args[i + 1]);
 				return;
 			}
-			load_users_text((String)data);
+			load_users_lines((String)data);
 			i += 2;
 			continue;
 		}

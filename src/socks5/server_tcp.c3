@@ -232,6 +232,7 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 		}
 		defer os::freeaddrinfo(ai);
 
+		bool any_parsed = false;
 		bool any_allowed = false;
 		fault last_connect_err = net::CONNECT_FAILED;
 		TcpSocket real_target = {};
@@ -241,6 +242,7 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 		{
 			InetAddress cand;
 			if (!sockaddr_to_inet(curr.ai_addr, curr.ai_addrlen, &cand)) continue;
+			any_parsed = true;
 			if (acl::is_denied(cand)) continue;
 
 			any_allowed = true;
@@ -260,6 +262,15 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 			real_target = res;
 			connected = true;
 			break;
+		}
+
+		if (!any_parsed)
+		{
+			// Resolution returned candidates in a family this server
+			// doesn't understand (not an ACL question at all — we
+			// never got far enough to ask one).
+			(void)proto::encode_reply(conn, GENERAL_FAILURE, empty_addr);
+			return;
 		}
 
 		if (!any_allowed)
