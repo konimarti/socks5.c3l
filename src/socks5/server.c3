@@ -108,11 +108,22 @@ fn int handle_connection_thread(void* arg)
 
 fn void handle_connection(Server* server, TcpSocket* conn)
 {
-	DeadlineReader dr = { .sock = (Socket*)conn };
-	// Any protocol, auth, or I/O fault during negotiation: drop the
-	// connection silently, matching ordinary proxy behaviour (RFC 1928
-	// does not define an error channel before the method is selected).
-	if (catch negotiate_and_serve(server, conn, &dr)) return;
+	// Each connection runs on its own spawned thread (see
+	// Server.serve_forever); `tmem` is only auto-created on the main
+	// thread — plain `@pool()` isn't enough either, it derives from that
+	// same on-demand allocator internally. `@pool_init` creates one from
+	// scratch, which is what every call in this connection's lifetime
+	// that uses `tmem` (decode_greeting, decode_userpass_request,
+	// decode_request, and whatever the command handlers use, up to a
+	// 65507-byte UDP datagram) needs, for the whole connection.
+	@pool_init(mem, 65536)
+	{
+		DeadlineReader dr = { .sock = (Socket*)conn };
+		// Any protocol, auth, or I/O fault during negotiation: drop the
+		// connection silently, matching ordinary proxy behaviour (RFC 1928
+		// does not define an error channel before the method is selected).
+		if (catch negotiate_and_serve(server, conn, &dr)) return;
+	};
 }
 
 fn void? negotiate_and_serve(Server* server, TcpSocket* conn, InStream in)
