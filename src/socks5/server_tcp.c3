@@ -37,17 +37,217 @@
 // commands — do not write a second copy loop.
 module socks5::server;
 
-import std::net, std::net::tcp;
-import socks5::proto;
+import std::net, std::net::tcp, std::time;
+import socks5::proto, socks5::relay;
+
+const Duration BIND_TIMEOUT = (Duration)(30L * time::SEC);
+
+<*
+ Maps a dial fault from tcp::connect to the closest SOCKS5 ReplyCode.
+*>
+fn proto::ReplyCode map_connect_error(fault err)
+{
+	switch (err)
+	{
+		case net::CONNECTION_REFUSED:
+			return CONNECTION_REFUSED;
+		case net::NETWORK_UNREACHABLE:
+			return NETWORK_UNREACHABLE;
+		case net::CONNECTION_TIMED_OUT:
+			return HOST_UNREACHABLE;
+		case net::ADDRINFO_FAILED:
+			return HOST_UNREACHABLE;
+		default:
+			return GENERAL_FAILURE;
+	}
+}
+
+<*
+ Formats dst as a host string suitable for tcp::connect into out_buf.
+ IPV4: dotted-decimal
+ DOMAIN: direct domain string
+ IPV6: hex groups
+*>
+fn String? dst_to_host(proto::Address dst, char[] out_buf)
+{
+	switch (dst.atype)
+	{
+		case IPV4:
+			return string::bformat(out_buf, "%d.%d.%d.%d",
+				(uint)dst.ipv4[0],
+				(uint)dst.ipv4[1],
+				(uint)dst.ipv4[2],
+				(uint)dst.ipv4[3]);
+		case DOMAIN:
+			return dst.domain;
+		case IPV6:
+			ushort[8] g;
+			for (usz i = 0; i < 8; i++)
+			{
+				g[i] = ((ushort)dst.ipv6[i * 2] << 8) | (ushort)dst.ipv6[i * 2 + 1];
+			}
+			return string::bformat(out_buf, "%x:%x:%x:%x:%x:%x:%x:%x",
+				g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+		default:
+			return proto::UNSUPPORTED_ADDRESS_TYPE~;
+	}
+}
+
+<*
+ Extracts the local bound address of a socket as a proto::Address.
+*>
+fn proto::Address socket_local_address(Socket* s)
+{
+	proto::Address out = { .atype = IPV4 };
+	if (try port = s.local_port()) out.port = port;
+
+	if (try laddr = s.local_address())
+	{
+		if (laddr.is_ipv6)
+		{
+			out.atype = IPV6;
+			mem::copy(&out.ipv6, &laddr.ipv6, 16);
+		}
+		else
+		{
+			out.atype = IPV4;
+			out.ipv4 = { laddr.ipv4.a, laddr.ipv4.b, laddr.ipv4.c, laddr.ipv4.d };
+		}
+	}
+	return out;
+}
+
+<*
+ Extracts the peer connected address of a socket as a proto::Address.
+*>
+fn proto::Address socket_peer_address(Socket* s)
+{
+	proto::Address out = { .atype = IPV4 };
+	if (try port = s.peer_port()) out.port = port;
+
+	if (try paddr = s.peer_address())
+	{
+		if (paddr.is_ipv6)
+		{
+			out.atype = IPV6;
+			mem::copy(&out.ipv6, &paddr.ipv6, 16);
+		}
+		else
+		{
+			out.atype = IPV4;
+			out.ipv4 = { paddr.ipv4.a, paddr.ipv4.b, paddr.ipv4.c, paddr.ipv4.d };
+		}
+	}
+	return out;
+}
 
 fn void handle_connect(TcpSocket* conn, proto::Address dst)
 {
-	Address fallback;
-	(void)proto::encode_reply(conn, COMMAND_NOT_SUPPORTED, fallback);
+	proto::Address empty_addr = { .atype = IPV4 };
+	char[64] host_buf;
+	String? host = dst_to_host(dst, &host_buf);
+	if (catch host)
+	{
+		(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty_addr);
+		return;
+	}
+
+	TcpSocket? target = tcp::connect(host, (int)dst.port);
+	if (catch err = target)
+	{
+		proto::ReplyCode code = map_connect_error(err);
+		(void)proto::encode_reply(conn, code, empty_addr);
+		return;
+	}
+	defer (void)target.close();
+
+	proto::Address bnd = socket_local_address((Socket*)&target);
+	if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
+
+	relay::relay_bidirectional((Socket*)conn, (Socket*)&target);
 }
 
 fn void handle_bind(TcpSocket* conn, proto::Address dst)
 {
-	Address fallback;
-	(void)proto::encode_reply(conn, COMMAND_NOT_SUPPORTED, fallback);
+	proto::Address empty_addr = { .atype = IPV4 };
+
+	// Bind to the same interface conn arrived on, with 0.0.0.0 fallback.
+	char[64] host_buf;
+	String bind_host = "0.0.0.0";
+	InetAddress? conn_local = conn.local_address();
+	if (try cl = conn_local)
+	{
+		if (!cl.is_ipv6)
+		{
+			bind_host = string::bformat(&host_buf, "%d.%d.%d.%d",
+				(uint)cl.ipv4.a, (uint)cl.ipv4.b, (uint)cl.ipv4.c, (uint)cl.ipv4.d);
+		}
+	}
+
+	TcpServerSocket? listener = tcp::listen(bind_host, 0, 1, REUSEADDR);
+	if (catch listener)
+	{
+		(void)proto::encode_reply(conn, GENERAL_FAILURE, empty_addr);
+		return;
+	}
+	defer (void)listener.close();
+
+	// First reply: listener's bound address and ephemeral port.
+	proto::Address listener_bnd = socket_local_address((Socket*)&listener);
+	if (listener_bnd.atype == IPV4 && listener_bnd.ipv4 == { 0, 0, 0, 0 })
+	{
+		if (try cl = conn_local)
+		{
+			if (!cl.is_ipv6)
+			{
+				listener_bnd.ipv4 = { cl.ipv4.a, cl.ipv4.b, cl.ipv4.c, cl.ipv4.d };
+			}
+		}
+	}
+	if (catch proto::encode_reply(conn, SUCCEEDED, listener_bnd)) return;
+
+	// Accept exactly one connection with bounded wait.
+	Poll[2] polls = {
+		{ .socket = listener.sock, .events = ANY_READ },
+		{ .socket = conn.sock, .events = ANY_READ },
+	};
+	ulong? n = net::poll(polls[0..], BIND_TIMEOUT);
+	if (catch n) return;
+	if (!n)
+	{
+		// Bounded wait expired: report failure to client.
+		(void)proto::encode_reply(conn, GENERAL_FAILURE, empty_addr);
+		return;
+	}
+
+	bool listener_ready = ((ushort)polls[0].revents & (ushort)PollSubscribe.ANY_READ) != 0;
+	if (!listener_ready)
+	{
+		// Client connection had activity/closure before listener got a connection.
+		char[1] peek_buf;
+		if (try peek_n = conn.peek(&peek_buf))
+		{
+			if (peek_n == 0) return;
+		}
+
+		(void)proto::encode_reply(conn, GENERAL_FAILURE, empty_addr);
+		return;
+	}
+
+	TcpSocket? accepted = tcp::accept(&listener);
+	if (catch accepted)
+	{
+		(void)proto::encode_reply(conn, GENERAL_FAILURE, empty_addr);
+		return;
+	}
+	defer (void)accepted.close();
+
+	// Close listener once the connection is accepted.
+	(void)listener.close();
+
+	// Second reply: peer address of accepted connection.
+	proto::Address peer_bnd = socket_peer_address((Socket*)&accepted);
+	if (catch proto::encode_reply(conn, SUCCEEDED, peer_bnd)) return;
+
+	relay::relay_bidirectional((Socket*)conn, (Socket*)&accepted);
 }
