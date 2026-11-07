@@ -21,6 +21,14 @@ import socks5::proto;
 const Duration HANDSHAKE_TIMEOUT = (Duration)(10L * time::SEC);
 const int LISTEN_BACKLOG = 64;
 
+// A connection flood with no cap spawns one OS thread per connection
+// until the process runs out of memory or thread handles — the single
+// highest-impact gap for running this somewhere actually exposed to
+// untrusted clients. serve_forever() takes the caller's chosen limit
+// explicitly; this is just a sane default for callers that don't have
+// a more specific number in mind.
+const usz DEFAULT_MAX_CONNECTIONS = 1024;
+
 excuse
 {
 	NO_ACCEPTABLE_METHODS,
@@ -29,11 +37,47 @@ excuse
 
 alias AuthCheckFn = fn bool(String username, String password);
 
+<*
+ A simple counting limiter: try_acquire() fails (returns false) once
+ `max` connections are concurrently held. One mutex, no condition
+ variable — serve_forever rejects immediately rather than queuing, so
+ nothing ever needs to wait on a release.
+*>
+struct ConnLimiter
+{
+	Mutex lock;
+	usz current;
+	usz max;
+}
+
+fn void ConnLimiter.init(&self, usz max)
+{
+	self.lock.init()!!;
+	self.max = max;
+}
+
+fn bool ConnLimiter.try_acquire(&self)
+{
+	self.lock.lock()!!;
+	defer self.lock.unlock();
+	if (self.current >= self.max) return false;
+	self.current++;
+	return true;
+}
+
+fn void ConnLimiter.release(&self)
+{
+	self.lock.lock()!!;
+	defer self.lock.unlock();
+	self.current--;
+}
+
 struct Server
 {
 	TcpServerSocket listener;
 	bool allow_no_auth;
 	AuthCheckFn auth_check; // null => USERNAME_PASSWORD is never offered
+	ConnLimiter limiter;
 }
 
 <*
@@ -79,23 +123,33 @@ fn Server*? Server.listen(&self, String host, int port)
 }
 
 <*
- Accept connections forever, one detached thread per connection. Returns
- only if the listening socket itself fails.
+ Accept connections forever, one detached thread per connection, up to
+ `max_connections` concurrently — beyond that, a new connection is
+ accepted (so the listen backlog doesn't back up) and closed immediately
+ without running any SOCKS5 negotiation. Returns only if the listening
+ socket itself fails.
 *>
-fn void? Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check)
+fn void? Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check, usz max_connections = DEFAULT_MAX_CONNECTIONS)
 {
 	self.allow_no_auth = allow_no_auth;
 	self.auth_check = auth_check;
+	self.limiter.init(max_connections);
 	while (true)
 	{
 		TcpSocket? conn = tcp::accept(&self.listener);
 		if (catch conn) continue; // a single failed accept must not stop the server
+		if (!self.limiter.try_acquire())
+		{
+			(void)conn.close();
+			continue;
+		}
 		ConnArgs* args = mem::new(ConnArgs, { .server = self, .conn = conn });
 		Thread t;
 		if (catch t.create(&handle_connection_thread, args))
 		{
 			(void)conn.close();
 			mem::free(args);
+			self.limiter.release();
 			continue;
 		}
 		(void)t.detach();
@@ -116,6 +170,7 @@ fn int handle_connection_thread(void* arg)
 	mem::free(args);
 	handle_connection(server, &conn);
 	(void)conn.close();
+	server.limiter.release();
 	return 0;
 }
 
