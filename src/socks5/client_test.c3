@@ -14,6 +14,7 @@ struct FakeServerArgs
 	TcpServerSocket* listener;
 	bool require_auth;
 	bool accept; // false => reply CONNECTION_REFUSED
+	bool misbehave_unoffered_method; // reply GSSAPI regardless of what was offered
 	// captured request, for assertions in the test after join
 	bool got_request;
 	proto::Command got_cmd;
@@ -27,10 +28,21 @@ fn int fake_server(void* arg)
 	FakeServerArgs* a = (FakeServerArgs*)arg;
 	TcpSocket? conn = tcp::accept(a.listener);
 	if (catch conn) return 1;
-	char[]? methods = proto::decode_greeting(&conn, mem);
+	// This runs on a spawned thread (see test_connect_* below); `tmem`
+	// needs @pool_init here for the same reason server.c3's connection
+	// threads do (see that file's module comment) — using `mem` instead
+	// avoided the panic but leaked every allocation, since `mem` is a
+	// plain heap allocator with no pool to reset.
+	@pool_init(mem, 16384)
+	{
+	char[]? methods = proto::decode_greeting(&conn, tmem);
 	if (catch methods) return 2;
 	proto::Method selected = proto::Method.NO_ACCEPTABLE;
-	if (a.require_auth)
+	if (a.misbehave_unoffered_method)
+	{
+		selected = proto::Method.GSSAPI; // never offered by the test client
+	}
+	else if (a.require_auth)
 	{
 		// This fake server demands username/password: fall through to
 		// NO_ACCEPTABLE rather than NO_AUTH if the client didn't offer it.
@@ -46,7 +58,7 @@ fn int fake_server(void* arg)
 	if (catch proto::encode_method_selection(&conn, selected)) return 3;
 	if (selected == proto::Method.USERNAME_PASSWORD)
 	{
-		proto::UserpassRequest? req = proto::decode_userpass_request(&conn, mem);
+		proto::UserpassRequest? req = proto::decode_userpass_request(&conn, tmem);
 		if (catch req) return 4;
 		bool ok = req.username == "alice" && req.password == "secret";
 		if (catch proto::encode_userpass_reply(&conn, ok)) return 5;
@@ -56,7 +68,7 @@ fn int fake_server(void* arg)
 			return 0;
 		}
 	}
-	proto::Request? req = proto::decode_request(&conn, mem);
+	proto::Request? req = proto::decode_request(&conn, tmem);
 	if (catch req) return 6;
 	a.got_request = true;
 	a.got_cmd = req.cmd;
@@ -85,6 +97,7 @@ fn int fake_server(void* arg)
 	}
 	(void)conn.close();
 	return 0;
+	};
 }
 
 module socks5::client @test;
@@ -113,6 +126,14 @@ fn void test_make_address_ipv4_vs_domain()
 	assert(d.atype == proto::AddressType.DOMAIN);
 	assert(d.domain == "example.com");
 	assert(d.port == 80);
+}
+
+fn void test_make_address_ipv6()
+{
+	proto::Address a = make_address("::1", 443);
+	assert(a.atype == proto::AddressType.IPV6);
+	assert(a.ipv6[15] == 1);
+	assert(a.port == 443);
 }
 
 fn void test_connect_no_auth_success()
@@ -177,6 +198,23 @@ fn void test_connect_no_acceptable_methods()
 	ushort port = listener.local_port()!!;
 	// server demands username/password, but the client offers NO_AUTH only
 	FakeServerArgs args = { .listener = &listener, .require_auth = true, .accept = true };
+	Thread t;
+	t.create(&fake_server, &args)!!;
+
+	@expect_fault(connect("127.0.0.1", (int)port, "example.com", (ushort)80), NO_ACCEPTABLE_METHODS);
+	t.join()!!;
+}
+
+fn void test_connect_rejects_server_selecting_unoffered_method()
+{
+	// A server that selects a method the client never offered is
+	// non-compliant (RFC 1928 section 3) — the client must not go
+	// along with it (found by an independent red-team review,
+	// reviews/client-review-v1.md, finding C-01).
+	TcpServerSocket listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
+	defer (void)listener.close();
+	ushort port = listener.local_port()!!;
+	FakeServerArgs args = { .listener = &listener, .misbehave_unoffered_method = true, .accept = true };
 	Thread t;
 	t.create(&fake_server, &args)!!;
 

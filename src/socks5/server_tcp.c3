@@ -171,13 +171,20 @@ fn void handle_bind(TcpSocket* conn, proto::Address dst)
 {
 	proto::Address empty_addr = { .atype = IPV4 };
 
-	// Bind to the same interface conn arrived on, with 0.0.0.0 fallback.
+	// Bind to the same interface conn arrived on, with a wildcard
+	// fallback in the matching address family (an IPv6 connection must
+	// not fall back to the IPv4 wildcard, which would bind the wrong
+	// family and report an address the client can't reach).
 	char[64] host_buf;
 	String bind_host = "0.0.0.0";
 	InetAddress? conn_local = conn.local_address();
 	if (try cl = conn_local)
 	{
-		if (!cl.is_ipv6)
+		if (cl.is_ipv6)
+		{
+			bind_host = "::";
+		}
+		else
 		{
 			bind_host = string::bformat(&host_buf, "%d.%d.%d.%d",
 				(uint)cl.ipv4.a, (uint)cl.ipv4.b, (uint)cl.ipv4.c, (uint)cl.ipv4.d);
@@ -192,15 +199,22 @@ fn void handle_bind(TcpSocket* conn, proto::Address dst)
 	}
 	defer (void)listener.close();
 
-	// First reply: listener's bound address and ephemeral port.
+	// First reply: listener's bound address and ephemeral port. A
+	// wildcard bind reports the wildcard address back, not a reachable
+	// one; substitute conn's local address in the matching family.
 	proto::Address listener_bnd = socket_local_address((Socket*)&listener);
-	if (listener_bnd.atype == IPV4 && listener_bnd.ipv4 == { 0, 0, 0, 0 })
+	if (try cl = conn_local)
 	{
-		if (try cl = conn_local)
+		if (listener_bnd.atype == IPV4 && listener_bnd.ipv4 == { 0, 0, 0, 0 } && !cl.is_ipv6)
 		{
-			if (!cl.is_ipv6)
+			listener_bnd.ipv4 = { cl.ipv4.a, cl.ipv4.b, cl.ipv4.c, cl.ipv4.d };
+		}
+		else if (listener_bnd.atype == IPV6 && cl.is_ipv6)
+		{
+			char[16] zero;
+			if (listener_bnd.ipv6 == zero)
 			{
-				listener_bnd.ipv4 = { cl.ipv4.a, cl.ipv4.b, cl.ipv4.c, cl.ipv4.d };
+				mem::copy(&listener_bnd.ipv6, &cl.ipv6, 16);
 			}
 		}
 	}

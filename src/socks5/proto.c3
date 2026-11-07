@@ -198,15 +198,18 @@ fn Method? decode_method_selection(InStream in)
 
 <*
  @return? UNSUPPORTED_VERSION
+ @return? NAME_TOO_LONG : "ULEN or PLEN was 0"
 *>
 fn UserpassRequest? decode_userpass_request(InStream in, Allocator allocator)
 {
 	char ver = in.read_byte()!;
 	if (ver != AUTH_VERSION) return UNSUPPORTED_VERSION~;
 	char ulen = in.read_byte()!;
+	if (ulen == 0) return NAME_TOO_LONG~; // RFC 1929 2: ULEN is 1..255
 	char[] uname = alloc::alloc_array(allocator, char, ulen)[:ulen];
 	io::read_all(in, uname)!;
 	char plen = in.read_byte()!;
+	if (plen == 0) return NAME_TOO_LONG~; // RFC 1929 2: PLEN is 1..255
 	char[] passwd = alloc::alloc_array(allocator, char, plen)[:plen];
 	io::read_all(in, passwd)!;
 	return { .username = (String)uname, .password = (String)passwd };

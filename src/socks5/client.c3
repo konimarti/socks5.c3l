@@ -36,14 +36,14 @@ fn Method? negotiate_method(TcpSocket* sock, Method[] methods)
 {
 	proto::encode_greeting(sock, methods)!;
 	Method selected = proto::decode_method_selection(sock)!;
-	switch (selected)
-	{
-		case NO_AUTH:
-		case USERNAME_PASSWORD:
-			return selected;
-		default:
-			return NO_ACCEPTABLE_METHODS~;
-	}
+	// RFC 1928 section 3: the server picks from the methods WE offered.
+	// A server that returns something else (whether a known method we
+	// never offered, or an unrecognized byte) is non-compliant, not
+	// something to go along with.
+	bool offered = false;
+	foreach (Method m : methods) if (m == selected) offered = true;
+	if (!offered) return NO_ACCEPTABLE_METHODS~;
+	return selected;
 }
 
 <*
@@ -68,24 +68,42 @@ fn proto::Reply? send_request(TcpSocket* sock, proto::Command cmd, proto::Addres
 }
 
 <*
- Build a DST.ADDR from a host string: a dotted-quad IPv4 literal goes out as
- IPV4, anything else as DOMAIN (the proxy resolves it — this also covers
- IPv6 literals, which getaddrinfo resolves on the proxy side).
+ Build a DST.ADDR from a host string: a dotted-quad IPv4 literal or a
+ colon-form IPv6 literal goes out as IPV4/IPV6 respectively (a remote
+ DNS-resolving proxy can't resolve either as a domain name — trying to
+ send a literal address through as DOMAIN would fail against most real
+ proxies); anything else goes out as DOMAIN for the proxy to resolve.
 *>
 fn proto::Address make_address(String host, ushort port)
 {
-	InetAddress? ip = net::ipv4_from_str(host);
-	if (catch ip)
+	InetAddress? ip4 = net::ipv4_from_str(host);
+	if (try ip = ip4)
 	{
-		return { .atype = proto::AddressType.DOMAIN, .domain = host, .port = port };
+		return {
+			.atype = proto::AddressType.IPV4,
+			.ipv4 = { ip.ipv4.a, ip.ipv4.b, ip.ipv4.c, ip.ipv4.d },
+			.port = port,
+		};
 	}
-	return {
-		.atype = proto::AddressType.IPV4,
-		.ipv4 = { ip.ipv4.a, ip.ipv4.b, ip.ipv4.c, ip.ipv4.d },
-		.port = port,
-	};
+	InetAddress? ip6 = net::ipv6_from_str(host);
+	if (try ip = ip6)
+	{
+		proto::Address addr = { .atype = proto::AddressType.IPV6, .port = port };
+		mem::copy(&addr.ipv6, &ip.ipv6, 16);
+		return addr;
+	}
+	return { .atype = proto::AddressType.DOMAIN, .domain = host, .port = port };
 }
 
+// Threading note: this uses `tmem` (directly, and indirectly via
+// std::net::addrinfo's own @pool()). Call it from the main thread, or
+// from a thread whose entry point has already wrapped its body in
+// @pool_init(mem, <size>) -- do NOT call it from a bare spawned thread
+// with no pool established, and do not wrap it in another @pool_init
+// yourself: @pool_init requires no pool already exist, which breaks
+// the common case of calling connect() from the main thread. See
+// server.c3's module comment for why connection-handling threads need
+// this at all.
 <*
  Full CONNECT handshake: dial the proxy, negotiate a method (offering
  USERNAME_PASSWORD in addition to NO_AUTH when credentials are given),

@@ -5,17 +5,19 @@
 // negotiate_and_serve has already decoded and validated the request.
 module socks5::server;
 
-import std::net, std::net::tcp, std::thread, std::io, std::time;
+import std::net, std::net::tcp, std::thread, std::io, std::time, std::time::clock;
 import socks5::proto;
 
-// Bound on every individual read during the pre-command handshake
-// (greeting, username/password subnegotiation, request). The proxy faces
-// unauthenticated clients directly at this stage, so a client that
-// trickles bytes one at a time must not be able to pin a connection
-// thread open indefinitely. Once a command is dispatched, data relay has
-// no such deadline (same accepted limitation as ordinary proxy traffic:
-// a genuinely idle established connection times out via
-// socks5::relay::IDLE_TIMEOUT instead).
+// Bound on the WHOLE pre-command handshake (greeting, username/password
+// subnegotiation, request), not each individual read — a per-read-only
+// deadline still lets a client trickle one byte every (just under)
+// HANDSHAKE_TIMEOUT seconds and pin a thread open indefinitely, which is
+// exactly the bug this constant's name promises to prevent. See
+// DeadlineReader, which measures elapsed time from connection start.
+// Once a command is dispatched, data relay has no such deadline (same
+// accepted limitation as ordinary proxy traffic: a genuinely idle
+// established connection times out via socks5::relay::IDLE_TIMEOUT
+// instead).
 const Duration HANDSHAKE_TIMEOUT = (Duration)(10L * time::SEC);
 const int LISTEN_BACKLOG = 64;
 
@@ -35,18 +37,29 @@ struct Server
 }
 
 <*
- Reads with a poll-enforced deadline (HANDSHAKE_TIMEOUT), wrapping the raw
- connection for the pre-command phase only. See the module comment above.
+ Reads with a poll-enforced deadline covering the whole pre-command
+ phase (HANDSHAKE_TIMEOUT total, from `start`, not per read). See the
+ module comment above.
 *>
 struct DeadlineReader (InStream)
 {
 	Socket* sock;
+	Clock start;
+}
+
+fn Duration DeadlineReader.remaining(&self)
+{
+	Duration elapsed = self.start.to_now().to_duration();
+	if (elapsed >= HANDSHAKE_TIMEOUT) return (Duration)0;
+	return HANDSHAKE_TIMEOUT - elapsed;
 }
 
 fn sz? DeadlineReader.read(&self, char[] buffer) @dynamic
 {
+	Duration left = self.remaining();
+	if (left <= (Duration)0) return TIMEOUT~;
 	Poll[1] polls = { { .socket = self.sock.sock, .events = ANY_READ } };
-	ulong n = net::poll(polls[0..], HANDSHAKE_TIMEOUT)!;
+	ulong n = net::poll(polls[0..], left)!;
 	if (!n) return TIMEOUT~;
 	return self.sock.read(buffer);
 }
@@ -118,10 +131,12 @@ fn void handle_connection(Server* server, TcpSocket* conn)
 	// 65507-byte UDP datagram) needs, for the whole connection.
 	@pool_init(mem, 65536)
 	{
-		DeadlineReader dr = { .sock = (Socket*)conn };
-		// Any protocol, auth, or I/O fault during negotiation: drop the
-		// connection silently, matching ordinary proxy behaviour (RFC 1928
-		// does not define an error channel before the method is selected).
+		DeadlineReader dr = { .sock = (Socket*)conn, .start = clock::now() };
+		// Any protocol, auth, or I/O fault before the request is decoded:
+		// drop the connection silently, matching ordinary proxy behaviour
+		// (RFC 1928 does not define an error channel before the method is
+		// selected, and a fault here means we don't have a well-formed
+		// request to reply to in the first place).
 		if (catch negotiate_and_serve(server, conn, &dr)) return;
 	};
 }
@@ -130,7 +145,26 @@ fn void? negotiate_and_serve(Server* server, TcpSocket* conn, InStream in)
 {
 	Method selected = negotiate_method(server, in, conn)!;
 	if (selected == USERNAME_PASSWORD) authenticate(server, in, conn)!;
-	proto::Request req = proto::decode_request(in, tmem)!;
+
+	// Unlike the greeting/auth faults above, an unsupported CMD or ATYP
+	// (RFC 1928 section 6) has a defined reply — COMMAND_NOT_SUPPORTED
+	// (0x07) / ADDRESS_TYPE_NOT_SUPPORTED (0x08) — rather than a silent
+	// drop. decode_request faults before VER/RSV are fully malformed and
+	// still get dropped silently (no address to reply to the client).
+	proto::Request? req = proto::decode_request(in, tmem);
+	if (catch err = req)
+	{
+		Address empty = { .atype = IPV4 };
+		switch (err)
+		{
+			case proto::UNSUPPORTED_COMMAND:
+				(void)proto::encode_reply(conn, COMMAND_NOT_SUPPORTED, empty);
+			case proto::UNSUPPORTED_ADDRESS_TYPE:
+				(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty);
+			default:
+		}
+		return err~;
+	}
 	dispatch(conn, req);
 }
 

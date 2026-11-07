@@ -1,7 +1,7 @@
 // socks5-server: CLI wrapper around socks5::server::Server.
 module main;
 
-import std::io;
+import std::io, std::crypto;
 import socks5::server;
 
 struct Credential
@@ -13,13 +13,29 @@ struct Credential
 Credential[32] g_credentials;
 usz g_credential_count;
 
+fn bool equal_constant_time(String a, String b)
+{
+	if (a.len != b.len) return false;
+	return crypto::safe_compare(a.ptr, b.ptr, a.len);
+}
+
+<*
+ Checks every account rather than returning on the first match, and
+ compares with safe_compare rather than `==`, so response latency
+ doesn't leak which account (or how many leading bytes) matched.
+*>
 fn bool check_credentials(String username, String password)
 {
+	bool found = false;
 	for (usz i = 0; i < g_credential_count; i++)
 	{
-		if (g_credentials[i].username == username && g_credentials[i].password == password) return true;
+		if (equal_constant_time(g_credentials[i].username, username)
+			&& equal_constant_time(g_credentials[i].password, password))
+		{
+			found = true;
+		}
 	}
-	return false;
+	return found;
 }
 
 fn void usage()
@@ -39,7 +55,12 @@ fn void main(String[] args)
 	int? port = args[2].to_int();
 	if (catch port)
 	{
-		io::printfn("bad port: %s", args[2]);
+		io::printfn("bad port (want 1..65535): %s", args[2]);
+		return;
+	}
+	if (port < 1 || port > 0xffff)
+	{
+		io::printfn("bad port (want 1..65535): %s", args[2]);
 		return;
 	}
 
