@@ -247,3 +247,288 @@ fn void test_udp_header_fragmentation_unsupported()
 	char[] raw = { 0x00, 0x00, 0x01, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	@expect_fault(decode_udp_header(raw, tmem), UNSUPPORTED_FRAGMENTATION);
 }
+
+// --- client-side additions: encode_greeting / decode_method_selection ---
+
+fn void test_encode_greeting()
+{
+	ByteWriter w;
+	w.init(tmem);
+	Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
+	encode_greeting(&w, methods[0..])!!;
+	char[] got = w.array_view();
+	assert(got.len == 4);
+	assert(got[0] == VERSION);
+	assert(got[1] == 2);
+	assert(got[2] == Method.NO_AUTH.wire);
+	assert(got[3] == Method.USERNAME_PASSWORD.wire);
+}
+
+fn void test_encode_greeting_empty_rejected()
+{
+	ByteWriter w;
+	w.init(tmem);
+	Method[1] one = { GSSAPI };
+	@expect_fault(encode_greeting(&w, one[:0]), NAME_TOO_LONG);
+}
+
+fn void test_encode_greeting_too_many_rejected()
+{
+	ByteWriter w;
+	w.init(tmem);
+	Method[256] many;
+	@expect_fault(encode_greeting(&w, many[0..]), NAME_TOO_LONG);
+}
+
+fn void test_greeting_round_trip()
+{
+	ByteWriter w;
+	w.init(tmem);
+	Method[3] methods = { NO_AUTH, GSSAPI, USERNAME_PASSWORD };
+	encode_greeting(&w, methods[0..])!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	char[] got = decode_greeting(&r, tmem)!!;
+	assert(got.len == 3);
+	assert(methods_contains(got, NO_AUTH));
+	assert(methods_contains(got, GSSAPI));
+	assert(methods_contains(got, USERNAME_PASSWORD));
+}
+
+fn void test_decode_method_selection_ok()
+{
+	char[] raw = { VERSION, Method.USERNAME_PASSWORD.wire };
+	ByteReader r;
+	r.init(raw);
+	Method m = decode_method_selection(&r)!!;
+	assert(m == USERNAME_PASSWORD);
+}
+
+fn void test_decode_method_selection_no_acceptable()
+{
+	char[] raw = { VERSION, Method.NO_ACCEPTABLE.wire };
+	ByteReader r;
+	r.init(raw);
+	assert(decode_method_selection(&r)!! == NO_ACCEPTABLE);
+}
+
+fn void test_decode_method_selection_bad_version()
+{
+	char[] raw = { 0x04, 0x00 };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_method_selection(&r), UNSUPPORTED_VERSION);
+}
+
+fn void test_decode_method_selection_unknown_method()
+{
+	char[] raw = { VERSION, 0x7f };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_method_selection(&r), MALFORMED_MESSAGE);
+}
+
+fn void test_method_selection_round_trip()
+{
+	ByteWriter w;
+	w.init(tmem);
+	encode_method_selection(&w, NO_AUTH)!!;
+	ByteReader r;
+	r.init(w.array_view());
+	assert(decode_method_selection(&r)!! == NO_AUTH);
+}
+
+// --- client-side additions: encode_userpass_request / decode_userpass_reply ---
+
+fn void test_userpass_request_round_trip()
+{
+	ByteWriter w;
+	w.init(tmem);
+	encode_userpass_request(&w, "alice", "secret")!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	UserpassRequest req = decode_userpass_request(&r, tmem)!!;
+	assert(req.username == "alice");
+	assert(req.password == "secret");
+}
+
+fn void test_encode_userpass_request_empty_rejected()
+{
+	ByteWriter w;
+	w.init(tmem);
+	@expect_fault(encode_userpass_request(&w, "", "x"), NAME_TOO_LONG);
+	@expect_fault(encode_userpass_request(&w, "x", ""), NAME_TOO_LONG);
+}
+
+fn void test_encode_userpass_request_too_long_rejected()
+{
+	ByteWriter w;
+	w.init(tmem);
+	char[256] big;
+	String s = (String)&big;
+	@expect_fault(encode_userpass_request(&w, s, "x"), NAME_TOO_LONG);
+	@expect_fault(encode_userpass_request(&w, "x", s), NAME_TOO_LONG);
+}
+
+fn void test_decode_userpass_reply_ok_and_fail()
+{
+	char[] raw_ok = { AUTH_VERSION, 0x00 };
+	ByteReader r;
+	r.init(raw_ok);
+	assert(decode_userpass_reply(&r)!!);
+
+	char[] raw_bad = { AUTH_VERSION, 0x01 };
+	r.init(raw_bad);
+	assert(!decode_userpass_reply(&r)!!);
+}
+
+fn void test_decode_userpass_reply_bad_version()
+{
+	char[] raw = { VERSION, 0x00 };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_userpass_reply(&r), UNSUPPORTED_VERSION);
+}
+
+fn void test_userpass_reply_round_trip()
+{
+	ByteWriter w;
+	w.init(tmem);
+	encode_userpass_reply(&w, true)!!;
+	ByteReader r;
+	r.init(w.array_view());
+	assert(decode_userpass_reply(&r)!!);
+}
+
+// --- client-side additions: encode_request / decode_reply ---
+
+fn void test_request_encode_round_trip_ipv4()
+{
+	Address dst = { .atype = IPV4, .ipv4 = { 1, 2, 3, 4 }, .port = 8080 };
+	ByteWriter w;
+	w.init(tmem);
+	encode_request(&w, Command.CONNECT, dst)!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	Request req = decode_request(&r, tmem)!!;
+	assert(req.cmd == CONNECT);
+	assert(req.dst.atype == IPV4);
+	assert(req.dst.ipv4[0] == 1 && req.dst.ipv4[3] == 4);
+	assert(req.dst.port == 8080);
+}
+
+fn void test_request_encode_round_trip_domain_bind()
+{
+	Address dst = { .atype = DOMAIN, .domain = "example.org", .port = 1080 };
+	ByteWriter w;
+	w.init(tmem);
+	encode_request(&w, Command.BIND, dst)!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	Request req = decode_request(&r, tmem)!!;
+	assert(req.cmd == BIND);
+	assert(req.dst.atype == DOMAIN);
+	assert(req.dst.domain == "example.org");
+	assert(req.dst.port == 1080);
+}
+
+fn void test_reply_round_trip()
+{
+	Address bnd = { .atype = DOMAIN, .domain = "proxy.example", .port = 1080 };
+	ByteWriter w;
+	w.init(tmem);
+	encode_reply(&w, ReplyCode.SUCCEEDED, bnd)!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	Reply rep = decode_reply(&r, tmem)!!;
+	assert(rep.code == SUCCEEDED);
+	assert(rep.bnd.atype == DOMAIN);
+	assert(rep.bnd.domain == "proxy.example");
+	assert(rep.bnd.port == 1080);
+}
+
+fn void test_reply_round_trip_error_code()
+{
+	Address bnd = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
+	ByteWriter w;
+	w.init(tmem);
+	encode_reply(&w, ReplyCode.CONNECTION_REFUSED, bnd)!!;
+
+	ByteReader r;
+	r.init(w.array_view());
+	Reply rep = decode_reply(&r, tmem)!!;
+	assert(rep.code == CONNECTION_REFUSED);
+	assert(rep.bnd.atype == IPV4);
+	assert(rep.bnd.port == 0);
+}
+
+fn void test_decode_reply_bad_version()
+{
+	char[] raw = { 0x04, 0x00, 0x00, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_reply(&r, tmem), UNSUPPORTED_VERSION);
+}
+
+fn void test_decode_reply_bad_reserved_byte()
+{
+	char[] raw = { VERSION, 0x00, 0x01, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_reply(&r, tmem), MALFORMED_MESSAGE);
+}
+
+fn void test_decode_reply_unknown_code()
+{
+	char[] raw = { VERSION, 0x7f, 0x00, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	ByteReader r;
+	r.init(raw);
+	@expect_fault(decode_reply(&r, tmem), MALFORMED_MESSAGE);
+}
+
+// --- full client<->server handshake over one byte stream ---
+
+fn void test_full_handshake_wire_round_trip()
+{
+	ByteWriter w;
+	w.init(tmem);
+
+	// client: greeting, userpass request, CONNECT request
+	Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
+	encode_greeting(&w, methods[0..])!!;
+	encode_userpass_request(&w, "bob", "hunter2")!!;
+	Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
+	encode_request(&w, Command.CONNECT, dst)!!;
+
+	// server: method selection, userpass reply, CONNECT reply
+	ByteWriter sw;
+	sw.init(tmem);
+	encode_method_selection(&sw, USERNAME_PASSWORD)!!;
+	encode_userpass_reply(&sw, true)!!;
+	Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 40000 };
+	encode_reply(&sw, ReplyCode.SUCCEEDED, bnd)!!;
+
+	// play both directions through one reader each
+	ByteReader cr;
+	cr.init(w.array_view());
+	char[] got_methods = decode_greeting(&cr, tmem)!!;
+	assert(got_methods.len == 2);
+	UserpassRequest ureq = decode_userpass_request(&cr, tmem)!!;
+	assert(ureq.username == "bob" && ureq.password == "hunter2");
+	Request req = decode_request(&cr, tmem)!!;
+	assert(req.cmd == CONNECT);
+	assert(req.dst.domain == "example.com" && req.dst.port == 443);
+
+	ByteReader sr;
+	sr.init(sw.array_view());
+	assert(decode_method_selection(&sr)!! == USERNAME_PASSWORD);
+	assert(decode_userpass_reply(&sr)!!);
+	Reply rep = decode_reply(&sr, tmem)!!;
+	assert(rep.code == SUCCEEDED);
+	assert(rep.bnd.ipv4[0] == 10 && rep.bnd.port == 40000);
+}

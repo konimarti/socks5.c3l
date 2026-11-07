@@ -76,6 +76,35 @@ fn AddressType? address_type_from_wire(char w)
 	}
 }
 
+fn Method? method_from_wire(char w)
+{
+	switch (w)
+	{
+		case 0x00: return NO_AUTH;
+		case 0x01: return GSSAPI;
+		case 0x02: return USERNAME_PASSWORD;
+		case 0xff: return NO_ACCEPTABLE;
+		default: return MALFORMED_MESSAGE~;
+	}
+}
+
+fn ReplyCode? reply_code_from_wire(char w)
+{
+	switch (w)
+	{
+		case 0x00: return SUCCEEDED;
+		case 0x01: return GENERAL_FAILURE;
+		case 0x02: return NOT_ALLOWED;
+		case 0x03: return NETWORK_UNREACHABLE;
+		case 0x04: return HOST_UNREACHABLE;
+		case 0x05: return CONNECTION_REFUSED;
+		case 0x06: return TTL_EXPIRED;
+		case 0x07: return COMMAND_NOT_SUPPORTED;
+		case 0x08: return ADDRESS_TYPE_NOT_SUPPORTED;
+		default: return MALFORMED_MESSAGE~;
+	}
+}
+
 struct Address
 {
 	AddressType atype;
@@ -91,6 +120,12 @@ struct Request
 	Address dst;
 }
 
+struct Reply
+{
+	ReplyCode code;
+	Address bnd;
+}
+
 struct UserpassRequest
 {
 	String username;
@@ -104,6 +139,18 @@ struct UdpDatagram
 }
 
 // --- greeting / method selection (RFC 1928 section 3) ---
+
+<*
+ Encode the client's version-identifier/method-selection message.
+ @return? NAME_TOO_LONG : "methods.len == 0 or > 255"
+*>
+fn void? encode_greeting(OutStream out, Method[] methods)
+{
+	if (methods.len == 0 || methods.len > MAX_NAME_LEN) return NAME_TOO_LONG~;
+	out.write_byte(VERSION)!;
+	out.write_byte((char)methods.len)!;
+	foreach (Method m : methods) out.write_byte(m.wire)!;
+}
 
 <*
  Decode the client's version-identifier/method-selection message.
@@ -134,6 +181,19 @@ fn void? encode_method_selection(OutStream out, Method selected)
 	io::write_all(out, &msg)!;
 }
 
+<*
+ Decode the server's method-selection message.
+ @return? UNSUPPORTED_VERSION
+ @return? MALFORMED_MESSAGE : "selected method byte is not a known method"
+*>
+fn Method? decode_method_selection(InStream in)
+{
+	char ver = in.read_byte()!;
+	if (ver != VERSION) return UNSUPPORTED_VERSION~;
+	char raw = in.read_byte()!;
+	return method_from_wire(raw);
+}
+
 // --- username/password subnegotiation (RFC 1929) ---
 
 <*
@@ -156,6 +216,34 @@ fn void? encode_userpass_reply(OutStream out, bool ok)
 {
 	char[2] msg = { AUTH_VERSION, ok ? 0 : 1 };
 	io::write_all(out, &msg)!;
+}
+
+<*
+ Encode the client's username/password request (RFC 1929 section 2).
+ @return? NAME_TOO_LONG : "user or pass length outside 1..255"
+*>
+fn void? encode_userpass_request(OutStream out, String user, String pass)
+{
+	if (user.len == 0 || user.len > MAX_NAME_LEN) return NAME_TOO_LONG~;
+	if (pass.len == 0 || pass.len > MAX_NAME_LEN) return NAME_TOO_LONG~;
+	out.write_byte(AUTH_VERSION)!;
+	out.write_byte((char)user.len)!;
+	io::write_all(out, (char[])user)!;
+	out.write_byte((char)pass.len)!;
+	io::write_all(out, (char[])pass)!;
+}
+
+<*
+ Decode the server's username/password reply.
+ @return "true when STATUS == 0x00 (success)"
+ @return? UNSUPPORTED_VERSION
+*>
+fn bool? decode_userpass_reply(InStream in)
+{
+	char ver = in.read_byte()!;
+	if (ver != AUTH_VERSION) return UNSUPPORTED_VERSION~;
+	char status = in.read_byte()!;
+	return status == 0;
 }
 
 // --- addresses (RFC 1928 section 5, the DST.ADDR/BND.ADDR wire shape) ---
@@ -230,6 +318,32 @@ fn void? encode_reply(OutStream out, ReplyCode code, Address bnd)
 	char[3] head = { VERSION, code.wire, 0 };
 	io::write_all(out, &head)!;
 	encode_address(out, bnd)!;
+}
+
+fn void? encode_request(OutStream out, Command cmd, Address dst)
+{
+	char[3] head = { VERSION, cmd.wire, 0 };
+	io::write_all(out, &head)!;
+	encode_address(out, dst)!;
+}
+
+<*
+ Decode the server's reply to a request.
+ @return? UNSUPPORTED_VERSION
+ @return? MALFORMED_MESSAGE : "RSV byte was not 0x00, or REP is not a known reply code"
+ @return? UNSUPPORTED_ADDRESS_TYPE
+ @return? NAME_TOO_LONG
+*>
+fn Reply? decode_reply(InStream in, Allocator allocator)
+{
+	char ver = in.read_byte()!;
+	if (ver != VERSION) return UNSUPPORTED_VERSION~;
+	char raw_code = in.read_byte()!;
+	ReplyCode code = reply_code_from_wire(raw_code)!;
+	char rsv = in.read_byte()!;
+	if (rsv != 0) return MALFORMED_MESSAGE~;
+	Address bnd = decode_address(in, allocator)!;
+	return { .code = code, .bnd = bnd };
 }
 
 // --- UDP relay header (RFC 1928 section 7) ---
