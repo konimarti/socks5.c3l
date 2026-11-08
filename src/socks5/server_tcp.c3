@@ -143,33 +143,8 @@ fn proto::Address socket_peer_address(Socket* s)
 
 fn bool sockaddr_to_inet(SockAddrPtr sa, Socklen_t sa_len, InetAddress* out_addr)
 {
-	if (sa_len < 8 || !sa) return false;
-	char[] bytes = ((char*)sa)[:sa_len];
-
-	$if env::DARWIN || env::BSD_FAMILY:
-		AIFamily family = (AIFamily)bytes[1];
-	$else
-		AIFamily family = (AIFamily)*(ushort*)bytes.ptr;
-	$endif
-
-	switch (family)
-	{
-		case os::AF_INET:
-			*out_addr = {
-				.ipv4 = { .a = bytes[4], .b = bytes[5], .c = bytes[6], .d = bytes[7] }
-			};
-			return true;
-
-		case os::AF_INET6:
-			if (sa_len < 24) return false;
-			InetAddress addr = { .is_ipv6 = true };
-			mem::copy(&addr.ipv6, &bytes[8], 16);
-			*out_addr = addr;
-			return true;
-
-		default:
-			return false;
-	}
+	if (!sa) return false;
+	return sockaddr_decode(((char*)sa)[:sa_len], out_addr, null);
 }
 
 fn void handle_connect(TcpSocket* conn, proto::Address dst)

@@ -74,32 +74,21 @@ fn bool address_equals(proto::Address a, proto::Address b)
 
 fn bool decode_sockaddr_to_proto(char[] storage, proto::Address* out_addr)
 {
-	if (storage.len < 8) return false;
-
-	$if env::DARWIN || env::BSD_FAMILY:
-		AIFamily family = (AIFamily)storage[1];
-	$else
-		AIFamily family = (AIFamily)*(ushort*)storage.ptr;
-	$endif
-
-	switch (family)
+	InetAddress ip;
+	ushort port;
+	if (!sockaddr_decode(storage, &ip, &port)) return false;
+	out_addr.port = port;
+	if (ip.is_ipv6)
 	{
-		case os::AF_INET:
-			out_addr.atype = IPV4;
-			out_addr.port = (ushort)(((ushort)(char)storage[2] << 8) | (ushort)(char)storage[3]);
-			mem::copy(&out_addr.ipv4, &storage[4], 4);
-			return true;
-
-		case os::AF_INET6:
-			if (storage.len < 28) return false;
-			out_addr.atype = IPV6;
-			out_addr.port = (ushort)(((ushort)(char)storage[2] << 8) | (ushort)(char)storage[3]);
-			mem::copy(&out_addr.ipv6, &storage[8], 16);
-			return true;
-
-		default:
-			return false;
+		out_addr.atype = IPV6;
+		mem::copy(&out_addr.ipv6, &ip.ipv6, 16);
 	}
+	else
+	{
+		out_addr.atype = IPV4;
+		out_addr.ipv4 = { ip.ipv4.a, ip.ipv4.b, ip.ipv4.c, ip.ipv4.d };
+	}
+	return true;
 }
 
 fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_len, InetAddress* out_ip, bool* out_is_v6)
@@ -148,25 +137,11 @@ fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_le
 			defer os::freeaddrinfo(ai);
 			if ((usz)ai.ai_addrlen > out_sa.len) return false;
 
-			char* sa_ptr = (char*)ai.ai_addr;
-			if (ai.ai_family == os::AF_INET6)
-			{
-				if (ai.ai_addrlen < 28) return false;
-				*out_is_v6 = true;
-				out_ip.is_ipv6 = true;
-				mem::copy(&out_ip.ipv6, &sa_ptr[8], 16);
-			}
-			else if (ai.ai_family == os::AF_INET)
-			{
-				if (ai.ai_addrlen < 16) return false;
-				*out_is_v6 = false;
-				out_ip.is_ipv6 = false;
-				out_ip.ipv4 = { .a = sa_ptr[4], .b = sa_ptr[5], .c = sa_ptr[6], .d = sa_ptr[7] };
-			}
-			else
-			{
-				return false;
-			}
+			char[] ai_bytes = ((char*)ai.ai_addr)[:ai.ai_addrlen];
+			InetAddress decoded;
+			if (!sockaddr_decode(ai_bytes, &decoded, null)) return false;
+			*out_is_v6 = decoded.is_ipv6;
+			*out_ip = decoded;
 
 			*out_len = ai.ai_addrlen;
 			mem::copy(out_sa.ptr, (void*)ai.ai_addr, (sz)ai.ai_addrlen);
