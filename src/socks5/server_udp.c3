@@ -58,7 +58,7 @@ const usz RECV_BUF_SIZE = 65536;
 fn bool poll_readable(Poll p) => ((ushort)p.revents & (ushort)PollSubscribe.ANY_READ) != 0;
 fn bool poll_has_error(Poll p) => ((ushort)p.revents & (ushort)(PollEvent.DISCONNECT | PollEvent.ERROR | PollEvent.INVALID)) != 0;
 
-fn bool address_equals(proto::Address a, proto::Address b)
+fn bool address_equals(proto::Socks5Address a, proto::Socks5Address b)
 {
 	if (a.atype != b.atype || a.port != b.port) return false;
 	switch (a.atype)
@@ -72,7 +72,7 @@ fn bool address_equals(proto::Address a, proto::Address b)
 	}
 }
 
-fn bool decode_sockaddr_to_proto(char[] storage, proto::Address* out_addr)
+fn bool decode_sockaddr_to_proto(char[] storage, proto::Socks5Address* out_addr)
 {
 	InetAddress ip;
 	ushort port;
@@ -91,7 +91,7 @@ fn bool decode_sockaddr_to_proto(char[] storage, proto::Address* out_addr)
 	return true;
 }
 
-fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_len, InetAddress* out_ip, bool* out_is_v6)
+fn bool resolve_destination(proto::Socks5Address dst, char[] out_sa, Socklen_t* out_len, InetAddress* out_ip, bool* out_is_v6)
 {
 	switch (dst.atype)
 	{
@@ -167,9 +167,9 @@ fn Socket? bind_udp_socket(String host, int port, AIFamily family)
 	return sock;
 }
 
-fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
+fn void handle_udp_associate(TcpSocket* conn, proto::Socks5Address client_hint)
 {
-	Address fallback;
+	Socks5Address fallback;
 	InetAddress? local_addr = conn.local_address();
 	if (catch local_addr)
 	{
@@ -192,7 +192,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 		return;
 	}
 
-	Address bnd_addr;
+	Socks5Address bnd_addr;
 	if (local_addr.is_ipv6)
 	{
 		bnd_addr.atype = IPV6;
@@ -246,7 +246,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 	(void)conn.sock.set_non_blocking(true);
 
 	bool client_pinned = false;
-	proto::Address client_addr;
+	proto::Socks5Address client_addr;
 	char[128] client_sa;
 	Socklen_t client_sa_len = 0;
 
@@ -286,7 +286,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 				sz got = recvfrom(client_sock.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&src_sa, &src_len);
 				if (got >= 0)
 				{
-					proto::Address src_addr;
+					proto::Socks5Address src_addr;
 					if (decode_sockaddr_to_proto(src_sa[:src_len], &src_addr))
 					{
 						if (!client_pinned)
@@ -298,7 +298,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 						}
 						if (address_equals(src_addr, client_addr))
 						{
-							proto::UdpDatagram? dgram = proto::decode_udp_header(recv_buf[:got], tmem);
+							proto::Socks5UdpDatagram? dgram = proto::decode_udp_header(recv_buf[:got], tmem);
 							if (catch dgram)
 							{
 								// malformed or fragmented: drop
@@ -337,7 +337,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 				sz got = recvfrom(target_v4.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
 				if (got >= 0 && client_pinned)
 				{
-					proto::Address target_addr;
+					proto::Socks5Address target_addr;
 					if (decode_sockaddr_to_proto(from_sa[:from_len], &target_addr))
 					{
 						char[]? pkt = proto::encode_udp_header(tmem, target_addr, recv_buf[:got]);
@@ -359,7 +359,7 @@ fn void handle_udp_associate(TcpSocket* conn, proto::Address client_hint)
 				sz got = recvfrom(target_v6.sock, &recv_buf, recv_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
 				if (got >= 0 && client_pinned)
 				{
-					proto::Address target_addr;
+					proto::Socks5Address target_addr;
 					if (decode_sockaddr_to_proto(from_sa[:from_len], &target_addr))
 					{
 						char[]? pkt = proto::encode_udp_header(tmem, target_addr, recv_buf[:got]);

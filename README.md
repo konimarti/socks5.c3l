@@ -44,7 +44,7 @@ c3c build socks5-client
 ```c3
 import socks5::server;
 
-Server srv;
+Socks5Server srv;
 srv.listen("0.0.0.0", 1080)!;
 srv.serve_forever(/* allow_no_auth */ true, /* auth_check */ null)!;
 ```
@@ -64,6 +64,12 @@ case, which always resolves regardless of what else is imported:
 ```c3
 socks5::client::connect("127.0.0.1", 1080, "example.com", 443)!;
 ```
+
+Types are named more specifically (`Socks5Server`, `Socks5Address`, ...)
+rather than, say, a bare `Server`/`Address`: a type is referenced in every
+variable declaration and function signature that touches it, not just
+once per call, so qualifying away a collision each time would be far more
+intrusive than for an occasional function call.
 
 ## Use the binaries
 

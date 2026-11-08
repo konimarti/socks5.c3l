@@ -77,7 +77,7 @@ fn void test_unspecified_v6_denied()
 
 fn void test_v4_prefix_zero_matches_everything_without_panicking()
 {
-	CidrV4 match_all = { { 0, 0, 0, 0 }, 0 };
+	Socks5CidrV4 match_all = { { 0, 0, 0, 0 }, 0 };
 	assert(matches_v4({ 1, 2, 3, 4 }, match_all));
 	assert(matches_v4({ 255, 255, 255, 255 }, match_all));
 }

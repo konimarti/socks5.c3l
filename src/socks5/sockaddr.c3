@@ -84,14 +84,14 @@ fn bool sockaddr_encode(InetAddress addr, ushort port, char[] out_sa, Socklen_t*
 }
 
 <*
- Encodes a proto::Address (as decoded from a SOCKS5 reply's BND.ADDR, or
+ Encodes a proto::Socks5Address (as decoded from a SOCKS5 reply's BND.ADDR, or
  built for a request's DST.ADDR) into a raw sockaddr byte buffer, for
  handing straight to sendto/connect/bind. DOMAIN addresses need DNS
  resolution, not formatting, so they are out of scope here and this
  returns false for them — RFC 1928 replies carry IPv4/IPv6 in practice.
  @return "false for AddressType.DOMAIN, or if `out_sa` is too small"
 *>
-fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_len)
+fn bool address_to_sockaddr(proto::Socks5Address addr, char[] out_sa, Socklen_t* out_len)
 {
 	switch (addr.atype)
 	{

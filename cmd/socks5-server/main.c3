@@ -1,4 +1,4 @@
-// socks5-server: CLI wrapper around socks5::server::Server.
+// socks5-server: CLI wrapper around socks5::server::Socks5Server.
 module main;
 
 import std::io, std::crypto, std::os::env, std::io::file;
@@ -274,7 +274,7 @@ fn void main(String[] args)
 
 	acl::configure(allow_private);
 
-	Server srv;
+	Socks5Server srv;
 	if (catch err = srv.listen(host, port))
 	{
 		io::printfn("listen on %s:%d failed: %s", host, port, err);

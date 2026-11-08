@@ -68,7 +68,7 @@ fn void test_userpass_round_trip()
 	char[] raw = { AUTH_VERSION, 3, 'b', 'o', 'b', 4, 'p', 'a', 's', 's' };
 	ByteReader r;
 	r.init(raw);
-	UserpassRequest req = decode_userpass_request(&r, tmem)!!;
+	Socks5UserpassRequest req = decode_userpass_request(&r, tmem)!!;
 	assert(req.username == "bob");
 	assert(req.password == "pass");
 
@@ -87,14 +87,14 @@ fn void test_userpass_bad_version()
 
 fn void test_address_round_trip_ipv4()
 {
-	Address addr = { .atype = IPV4, .ipv4 = { 192, 168, 1, 1 }, .port = 1080 };
+	Socks5Address addr = { .atype = IPV4, .ipv4 = { 192, 168, 1, 1 }, .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_address(&w, addr)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Address back = decode_address(&r, tmem)!!;
+	Socks5Address back = decode_address(&r, tmem)!!;
 	assert(back.atype == IPV4);
 	assert(back.ipv4[0] == 192 && back.ipv4[3] == 1);
 	assert(back.port == 1080);
@@ -102,7 +102,7 @@ fn void test_address_round_trip_ipv4()
 
 fn void test_address_round_trip_ipv6()
 {
-	Address addr = { .atype = IPV6, .port = 443 };
+	Socks5Address addr = { .atype = IPV6, .port = 443 };
 	addr.ipv6[15] = 1;
 	ByteWriter w;
 	w.init(tmem);
@@ -110,7 +110,7 @@ fn void test_address_round_trip_ipv6()
 
 	ByteReader r;
 	r.init(w.array_view());
-	Address back = decode_address(&r, tmem)!!;
+	Socks5Address back = decode_address(&r, tmem)!!;
 	assert(back.atype == IPV6);
 	assert(back.ipv6[15] == 1);
 	assert(back.port == 443);
@@ -118,14 +118,14 @@ fn void test_address_round_trip_ipv6()
 
 fn void test_address_round_trip_domain()
 {
-	Address addr = { .atype = DOMAIN, .domain = "example.com", .port = 80 };
+	Socks5Address addr = { .atype = DOMAIN, .domain = "example.com", .port = 80 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_address(&w, addr)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Address back = decode_address(&r, tmem)!!;
+	Socks5Address back = decode_address(&r, tmem)!!;
 	assert(back.atype == DOMAIN);
 	assert(back.domain == "example.com");
 	assert(back.port == 80);
@@ -135,20 +135,20 @@ fn void test_address_domain_max_length()
 {
 	char[255] name;
 	for (usz i = 0; i < name.len; i++) name[i] = 'a';
-	Address addr = { .atype = DOMAIN, .domain = (String)&name, .port = 1 };
+	Socks5Address addr = { .atype = DOMAIN, .domain = (String)&name, .port = 1 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_address(&w, addr)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Address back = decode_address(&r, tmem)!!;
+	Socks5Address back = decode_address(&r, tmem)!!;
 	assert(back.domain.len == 255);
 }
 
 fn void test_encode_address_empty_domain_rejected()
 {
-	Address addr = { .atype = DOMAIN, .domain = "", .port = 1 };
+	Socks5Address addr = { .atype = DOMAIN, .domain = "", .port = 1 };
 	ByteWriter w;
 	w.init(tmem);
 	@expect_fault(encode_address(&w, addr), NAME_TOO_LONG);
@@ -172,7 +172,7 @@ fn void test_decode_address_domain_zero_length()
 
 fn void test_request_round_trip_connect()
 {
-	Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
+	Socks5Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
 	ByteWriter w;
 	w.init(tmem);
 	w.write_byte(VERSION)!!;
@@ -182,7 +182,7 @@ fn void test_request_round_trip_connect()
 
 	ByteReader r;
 	r.init(w.array_view());
-	Request req = decode_request(&r, tmem)!!;
+	Socks5Request req = decode_request(&r, tmem)!!;
 	assert(req.cmd == CONNECT);
 	assert(req.dst.domain == "example.com");
 	assert(req.dst.port == 443);
@@ -214,7 +214,7 @@ fn void test_request_bad_reserved_byte()
 
 fn void test_encode_reply()
 {
-	Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 1080 };
+	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_reply(&w, ReplyCode.SUCCEEDED, bnd)!!;
@@ -226,11 +226,11 @@ fn void test_encode_reply()
 
 fn void test_udp_header_round_trip()
 {
-	Address dst = { .atype = IPV4, .ipv4 = { 8, 8, 8, 8 }, .port = 53 };
+	Socks5Address dst = { .atype = IPV4, .ipv4 = { 8, 8, 8, 8 }, .port = 53 };
 	char[] payload = "dns-query";
 	char[] packet = encode_udp_header(tmem, dst, payload)!!;
 
-	UdpDatagram dgram = decode_udp_header(packet, tmem)!!;
+	Socks5UdpDatagram dgram = decode_udp_header(packet, tmem)!!;
 	assert(dgram.dst.atype == IPV4);
 	assert(dgram.dst.port == 53);
 	assert((String)dgram.payload == "dns-query");
@@ -349,7 +349,7 @@ fn void test_userpass_request_round_trip()
 
 	ByteReader r;
 	r.init(w.array_view());
-	UserpassRequest req = decode_userpass_request(&r, tmem)!!;
+	Socks5UserpassRequest req = decode_userpass_request(&r, tmem)!!;
 	assert(req.username == "alice");
 	assert(req.password == "secret");
 }
@@ -406,14 +406,14 @@ fn void test_userpass_reply_round_trip()
 
 fn void test_request_encode_round_trip_ipv4()
 {
-	Address dst = { .atype = IPV4, .ipv4 = { 1, 2, 3, 4 }, .port = 8080 };
+	Socks5Address dst = { .atype = IPV4, .ipv4 = { 1, 2, 3, 4 }, .port = 8080 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_request(&w, Command.CONNECT, dst)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Request req = decode_request(&r, tmem)!!;
+	Socks5Request req = decode_request(&r, tmem)!!;
 	assert(req.cmd == CONNECT);
 	assert(req.dst.atype == IPV4);
 	assert(req.dst.ipv4[0] == 1 && req.dst.ipv4[3] == 4);
@@ -422,14 +422,14 @@ fn void test_request_encode_round_trip_ipv4()
 
 fn void test_request_encode_round_trip_domain_bind()
 {
-	Address dst = { .atype = DOMAIN, .domain = "example.org", .port = 1080 };
+	Socks5Address dst = { .atype = DOMAIN, .domain = "example.org", .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_request(&w, Command.BIND, dst)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Request req = decode_request(&r, tmem)!!;
+	Socks5Request req = decode_request(&r, tmem)!!;
 	assert(req.cmd == BIND);
 	assert(req.dst.atype == DOMAIN);
 	assert(req.dst.domain == "example.org");
@@ -438,14 +438,14 @@ fn void test_request_encode_round_trip_domain_bind()
 
 fn void test_reply_round_trip()
 {
-	Address bnd = { .atype = DOMAIN, .domain = "proxy.example", .port = 1080 };
+	Socks5Address bnd = { .atype = DOMAIN, .domain = "proxy.example", .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_reply(&w, ReplyCode.SUCCEEDED, bnd)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Reply rep = decode_reply(&r, tmem)!!;
+	Socks5Reply rep = decode_reply(&r, tmem)!!;
 	assert(rep.code == SUCCEEDED);
 	assert(rep.bnd.atype == DOMAIN);
 	assert(rep.bnd.domain == "proxy.example");
@@ -454,14 +454,14 @@ fn void test_reply_round_trip()
 
 fn void test_reply_round_trip_error_code()
 {
-	Address bnd = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
+	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
 	ByteWriter w;
 	w.init(tmem);
 	encode_reply(&w, ReplyCode.CONNECTION_REFUSED, bnd)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
-	Reply rep = decode_reply(&r, tmem)!!;
+	Socks5Reply rep = decode_reply(&r, tmem)!!;
 	assert(rep.code == CONNECTION_REFUSED);
 	assert(rep.bnd.atype == IPV4);
 	assert(rep.bnd.port == 0);
@@ -502,7 +502,7 @@ fn void test_full_handshake_wire_round_trip()
 	Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
 	encode_greeting(&w, methods[0..])!!;
 	encode_userpass_request(&w, "bob", "hunter2")!!;
-	Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
+	Socks5Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
 	encode_request(&w, Command.CONNECT, dst)!!;
 
 	// server: method selection, userpass reply, CONNECT reply
@@ -510,7 +510,7 @@ fn void test_full_handshake_wire_round_trip()
 	sw.init(tmem);
 	encode_method_selection(&sw, USERNAME_PASSWORD)!!;
 	encode_userpass_reply(&sw, true)!!;
-	Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 40000 };
+	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 40000 };
 	encode_reply(&sw, ReplyCode.SUCCEEDED, bnd)!!;
 
 	// play both directions through one reader each
@@ -518,9 +518,9 @@ fn void test_full_handshake_wire_round_trip()
 	cr.init(w.array_view());
 	char[] got_methods = decode_greeting(&cr, tmem)!!;
 	assert(got_methods.len == 2);
-	UserpassRequest ureq = decode_userpass_request(&cr, tmem)!!;
+	Socks5UserpassRequest ureq = decode_userpass_request(&cr, tmem)!!;
 	assert(ureq.username == "bob" && ureq.password == "hunter2");
-	Request req = decode_request(&cr, tmem)!!;
+	Socks5Request req = decode_request(&cr, tmem)!!;
 	assert(req.cmd == CONNECT);
 	assert(req.dst.domain == "example.com" && req.dst.port == 443);
 
@@ -528,7 +528,7 @@ fn void test_full_handshake_wire_round_trip()
 	sr.init(sw.array_view());
 	assert(decode_method_selection(&sr)!! == USERNAME_PASSWORD);
 	assert(decode_userpass_reply(&sr)!!);
-	Reply rep = decode_reply(&sr, tmem)!!;
+	Socks5Reply rep = decode_reply(&sr, tmem)!!;
 	assert(rep.code == SUCCEEDED);
 	assert(rep.bnd.ipv4[0] == 10 && rep.bnd.port == 40000);
 }

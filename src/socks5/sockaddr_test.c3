@@ -61,7 +61,7 @@ fn void test_encode_ipv6_buffer_too_small()
 
 fn void test_address_to_sockaddr_ipv4_matches_direct_encode()
 {
-	proto::Address addr = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 53 };
+	proto::Socks5Address addr = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 53 };
 	char[16] via_address;
 	Socklen_t via_address_len = 0;
 	assert(address_to_sockaddr(addr, via_address[0..], &via_address_len), "address_to_sockaddr ipv4");
@@ -79,7 +79,7 @@ fn void test_address_to_sockaddr_domain_not_supported()
 {
 	// DOMAIN needs DNS resolution, not formatting - that's a server-side
 	// concern (socks5::server's resolve_destination), not this module's.
-	proto::Address addr = { .atype = DOMAIN, .domain = "example.com", .port = 80 };
+	proto::Socks5Address addr = { .atype = DOMAIN, .domain = "example.com", .port = 80 };
 	char[128] sa;
 	Socklen_t sa_len = 0;
 	assert(!address_to_sockaddr(addr, sa[0..], &sa_len), "DOMAIN is out of scope for address_to_sockaddr");

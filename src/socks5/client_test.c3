@@ -18,8 +18,8 @@ import socks5::proto, socks5::server;
  project applies elsewhere, just within one process instead of against
  curl/ssh.
 
- Deliberately NOT Server.serve_forever(): that loop never returns, so
- the thread running it would outlive the test function — a Server
+ Deliberately NOT Socks5Server.serve_forever(): that loop never returns, so
+ the thread running it would outlive the test function — a Socks5Server
  struct on this function's stack would then be read by a thread after
  its frame is reused by the next test (this happened: a corrupted-
  mutex panic turned up in an unrelated LATER test, where the clobbered
@@ -33,7 +33,7 @@ import socks5::proto, socks5::server;
 struct OneShotArgs
 {
 	TcpServerSocket* listener;
-	server::Server* config; // only allow_no_auth/auth_check are read; no .listen()/limiter needed
+	server::Socks5Server* config; // only allow_no_auth/auth_check are read; no .listen()/limiter needed
 }
 
 fn int run_one_connection(void* arg)
@@ -96,7 +96,7 @@ fn int fake_server(void* arg)
 	if (catch proto::encode_method_selection(&conn, selected)) return 3;
 	if (selected == proto::Method.USERNAME_PASSWORD)
 	{
-		proto::UserpassRequest? req = proto::decode_userpass_request(&conn, tmem);
+		proto::Socks5UserpassRequest? req = proto::decode_userpass_request(&conn, tmem);
 		if (catch req) return 4;
 		bool ok = req.username == "alice" && req.password == "secret";
 		if (catch proto::encode_userpass_reply(&conn, ok)) return 5;
@@ -106,7 +106,7 @@ fn int fake_server(void* arg)
 			return 0;
 		}
 	}
-	proto::Request? req = proto::decode_request(&conn, tmem);
+	proto::Socks5Request? req = proto::decode_request(&conn, tmem);
 	if (catch req) return 6;
 	a.got_request = true;
 	a.got_cmd = req.cmd;
@@ -119,7 +119,7 @@ fn int fake_server(void* arg)
 		for (usz i = 0; i < n; i++) a.got_domain[i] = req.dst.domain[i];
 	}
 	proto::ReplyCode code = a.accept ? proto::ReplyCode.SUCCEEDED : proto::ReplyCode.CONNECTION_REFUSED;
-	proto::Address bnd = { .atype = proto::AddressType.IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = 12345 };
+	proto::Socks5Address bnd = { .atype = proto::AddressType.IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = 12345 };
 	if (catch proto::encode_reply(&conn, code, bnd)) return 7;
 	if (a.accept)
 	{
@@ -155,12 +155,12 @@ macro void @expect_fault(#expr, fault want)
 
 fn void test_make_address_ipv4_vs_domain()
 {
-	proto::Address a = make_address("192.168.0.1", 1080);
+	proto::Socks5Address a = make_address("192.168.0.1", 1080);
 	assert(a.atype == proto::AddressType.IPV4);
 	assert(a.ipv4[0] == 192 && a.ipv4[3] == 1);
 	assert(a.port == 1080);
 
-	proto::Address d = make_address("example.com", 80);
+	proto::Socks5Address d = make_address("example.com", 80);
 	assert(d.atype == proto::AddressType.DOMAIN);
 	assert(d.domain == "example.com");
 	assert(d.port == 80);
@@ -168,7 +168,7 @@ fn void test_make_address_ipv4_vs_domain()
 
 fn void test_make_address_ipv6()
 {
-	proto::Address a = make_address("::1", 443);
+	proto::Socks5Address a = make_address("::1", 443);
 	assert(a.atype == proto::AddressType.IPV6);
 	assert(a.ipv6[15] == 1);
 	assert(a.port == 443);
@@ -279,18 +279,18 @@ fn void test_bind_round_trip_against_real_server()
 	defer (void)proxy_listener.close();
 	ushort proxy_port = proxy_listener.local_port()!!;
 
-	server::Server config;
+	server::Socks5Server config;
 	config.allow_no_auth = true;
 	OneShotArgs args = { .listener = &proxy_listener, .config = &config };
 	Thread t;
 	t.create(&run_one_connection, &args)!!;
 
-	BindListener listener = bind("127.0.0.1", (int)proxy_port, "0.0.0.0", (ushort)0)!!;
+	Socks5BindListener listener = bind("127.0.0.1", (int)proxy_port, "0.0.0.0", (ushort)0)!!;
 	assert(listener.bound_addr.atype == IPV4, "expected IPV4 bind address on loopback");
 
 	// The peer connects to the address the proxy reported in part 1.
 	TcpSocket peer = tcp::connect("127.0.0.1", (int)listener.bound_addr.port)!!;
-	BindConnection conn = bind_wait(&listener.control)!!;
+	Socks5BindConnection conn = bind_wait(&listener.control)!!;
 	TcpSocket data_sock = conn.socket;
 	assert(conn.peer_addr.atype == IPV4, "expected IPV4 peer address on loopback");
 
@@ -325,19 +325,19 @@ fn void test_udp_associate_round_trip_against_real_server()
 	defer (void)proxy_listener.close();
 	ushort proxy_port = proxy_listener.local_port()!!;
 
-	server::Server config;
+	server::Socks5Server config;
 	config.allow_no_auth = true;
 	OneShotArgs args = { .listener = &proxy_listener, .config = &config };
 	Thread t;
 	t.create(&run_one_connection, &args)!!;
 
-	UdpAssociation assoc = udp_associate("127.0.0.1", (int)proxy_port)!!;
+	Socks5UdpAssociation assoc = udp_associate("127.0.0.1", (int)proxy_port)!!;
 
 	Socket target = server::bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
 	defer (void)target.close();
 	ushort target_port = target.local_port()!!;
 
-	proto::Address target_addr = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
+	proto::Socks5Address target_addr = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
 	char[] payload = "hello from client";
 	char[] packet = proto::encode_udp_header(tmem, target_addr, payload)!!;
 
@@ -379,7 +379,7 @@ fn void test_udp_associate_round_trip_against_real_server()
 	got = server::recvfrom(client_udp.sock, &client_buf, client_buf.len, 0, (SockAddrPtr)&reply_from_sa, &reply_from_len);
 	assert(got > 0, "client received reply datagram");
 
-	proto::UdpDatagram reply_dgram = proto::decode_udp_header(client_buf[:got], tmem)!!;
+	proto::Socks5UdpDatagram reply_dgram = proto::decode_udp_header(client_buf[:got], tmem)!!;
 	assert((String)reply_dgram.payload == (String)reply, "client received correct reply payload");
 
 	// Closing the control connection ends the association (RFC 1928

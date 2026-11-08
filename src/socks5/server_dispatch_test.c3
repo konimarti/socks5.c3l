@@ -9,7 +9,7 @@ import std::net, std::net::tcp, std::thread;
 
 struct DispatchArgs
 {
-	Server* server;
+	Socks5Server* server;
 	TcpSocket conn;
 }
 
@@ -35,7 +35,7 @@ fn void test_unsupported_command_replies_with_correct_code()
 	defer (void)client.close();
 	TcpSocket conn = tcp::accept(&listener)!!;
 
-	Server server;
+	Socks5Server server;
 	server.allow_no_auth = true;
 	DispatchArgs args = { .server = &server, .conn = conn };
 	Thread t;
@@ -69,7 +69,7 @@ fn void test_unsupported_address_type_replies_with_correct_code()
 	defer (void)client.close();
 	TcpSocket conn = tcp::accept(&listener)!!;
 
-	Server server;
+	Socks5Server server;
 	server.allow_no_auth = true;
 	DispatchArgs args = { .server = &server, .conn = conn };
 	Thread t;

@@ -105,7 +105,7 @@ fn ReplyCode? reply_code_from_wire(char w)
 	}
 }
 
-struct Address
+struct Socks5Address
 {
 	AddressType atype;
 	char[4] ipv4;
@@ -114,27 +114,27 @@ struct Address
 	ushort port;   // host byte order
 }
 
-struct Request
+struct Socks5Request
 {
 	Command cmd;
-	Address dst;
+	Socks5Address dst;
 }
 
-struct Reply
+struct Socks5Reply
 {
 	ReplyCode code;
-	Address bnd;
+	Socks5Address bnd;
 }
 
-struct UserpassRequest
+struct Socks5UserpassRequest
 {
 	String username;
 	String password;
 }
 
-struct UdpDatagram
+struct Socks5UdpDatagram
 {
-	Address dst;
+	Socks5Address dst;
 	char[] payload; // view into the caller's buffer; not copied, not owned
 }
 
@@ -200,7 +200,7 @@ fn Method? decode_method_selection(InStream in)
  @return? UNSUPPORTED_VERSION
  @return? NAME_TOO_LONG : "ULEN or PLEN was 0"
 *>
-fn UserpassRequest? decode_userpass_request(InStream in, Allocator allocator)
+fn Socks5UserpassRequest? decode_userpass_request(InStream in, Allocator allocator)
 {
 	char ver = in.read_byte()!;
 	if (ver != AUTH_VERSION) return UNSUPPORTED_VERSION~;
@@ -255,9 +255,9 @@ fn bool? decode_userpass_reply(InStream in)
  @return? UNSUPPORTED_ADDRESS_TYPE
  @return? NAME_TOO_LONG
 *>
-fn Address? decode_address(InStream in, Allocator allocator)
+fn Socks5Address? decode_address(InStream in, Allocator allocator)
 {
-	Address addr;
+	Socks5Address addr;
 	char raw_atype = in.read_byte()!;
 	addr.atype = address_type_from_wire(raw_atype)!;
 	switch (addr.atype)
@@ -279,7 +279,7 @@ fn Address? decode_address(InStream in, Allocator allocator)
 	return addr;
 }
 
-fn void? encode_address(OutStream out, Address addr)
+fn void? encode_address(OutStream out, Socks5Address addr)
 {
 	out.write_byte(addr.atype.wire)!;
 	switch (addr.atype)
@@ -304,7 +304,7 @@ fn void? encode_address(OutStream out, Address addr)
  @return? UNSUPPORTED_COMMAND
  @return? MALFORMED_MESSAGE : "RSV byte was not 0x00"
 *>
-fn Request? decode_request(InStream in, Allocator allocator)
+fn Socks5Request? decode_request(InStream in, Allocator allocator)
 {
 	char ver = in.read_byte()!;
 	if (ver != VERSION) return UNSUPPORTED_VERSION~;
@@ -312,18 +312,18 @@ fn Request? decode_request(InStream in, Allocator allocator)
 	Command cmd = command_from_wire(raw_cmd)!;
 	char rsv = in.read_byte()!;
 	if (rsv != 0) return MALFORMED_MESSAGE~;
-	Address dst = decode_address(in, allocator)!;
+	Socks5Address dst = decode_address(in, allocator)!;
 	return { .cmd = cmd, .dst = dst };
 }
 
-fn void? encode_reply(OutStream out, ReplyCode code, Address bnd)
+fn void? encode_reply(OutStream out, ReplyCode code, Socks5Address bnd)
 {
 	char[3] head = { VERSION, code.wire, 0 };
 	io::write_all(out, &head)!;
 	encode_address(out, bnd)!;
 }
 
-fn void? encode_request(OutStream out, Command cmd, Address dst)
+fn void? encode_request(OutStream out, Command cmd, Socks5Address dst)
 {
 	char[3] head = { VERSION, cmd.wire, 0 };
 	io::write_all(out, &head)!;
@@ -337,7 +337,7 @@ fn void? encode_request(OutStream out, Command cmd, Address dst)
  @return? UNSUPPORTED_ADDRESS_TYPE
  @return? NAME_TOO_LONG
 *>
-fn Reply? decode_reply(InStream in, Allocator allocator)
+fn Socks5Reply? decode_reply(InStream in, Allocator allocator)
 {
 	char ver = in.read_byte()!;
 	if (ver != VERSION) return UNSUPPORTED_VERSION~;
@@ -345,7 +345,7 @@ fn Reply? decode_reply(InStream in, Allocator allocator)
 	ReplyCode code = reply_code_from_wire(raw_code)!;
 	char rsv = in.read_byte()!;
 	if (rsv != 0) return MALFORMED_MESSAGE~;
-	Address bnd = decode_address(in, allocator)!;
+	Socks5Address bnd = decode_address(in, allocator)!;
 	return { .code = code, .bnd = bnd };
 }
 
@@ -355,7 +355,7 @@ fn Reply? decode_reply(InStream in, Allocator allocator)
  @return? MALFORMED_MESSAGE : "RSV bytes were not 0x0000"
  @return? UNSUPPORTED_FRAGMENTATION
 *>
-fn UdpDatagram? decode_udp_header(char[] packet, Allocator allocator)
+fn Socks5UdpDatagram? decode_udp_header(char[] packet, Allocator allocator)
 {
 	ByteReader reader;
 	reader.init(packet);
@@ -364,11 +364,11 @@ fn UdpDatagram? decode_udp_header(char[] packet, Allocator allocator)
 	if (rsv[0] != 0 || rsv[1] != 0) return MALFORMED_MESSAGE~;
 	char frag = reader.read_byte()!;
 	if (frag != 0) return UNSUPPORTED_FRAGMENTATION~;
-	Address dst = decode_address(&reader, allocator)!;
+	Socks5Address dst = decode_address(&reader, allocator)!;
 	return { .dst = dst, .payload = packet[reader.index..] };
 }
 
-fn char[]? encode_udp_header(Allocator allocator, Address dst, char[] payload)
+fn char[]? encode_udp_header(Allocator allocator, Socks5Address dst, char[] payload)
 {
 	ByteWriter writer;
 	writer.init(allocator);

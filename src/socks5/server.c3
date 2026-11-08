@@ -13,7 +13,7 @@ import socks5::proto;
 // deadline still lets a client trickle one byte every (just under)
 // HANDSHAKE_TIMEOUT seconds and pin a thread open indefinitely, which is
 // exactly the bug this constant's name promises to prevent. See
-// DeadlineReader, which measures elapsed time from connection start.
+// Socks5DeadlineReader, which measures elapsed time from connection start.
 // Once a command is dispatched, data relay has no such deadline (same
 // accepted limitation as ordinary proxy traffic: a genuinely idle
 // established connection times out via socks5::relay::IDLE_TIMEOUT
@@ -43,21 +43,21 @@ alias AuthCheckFn = fn bool(String username, String password);
  variable — serve_forever rejects immediately rather than queuing, so
  nothing ever needs to wait on a release.
 *>
-struct ConnLimiter
+struct Socks5ConnLimiter
 {
 	Mutex lock;
 	usz current;
 	usz max;
 }
 
-fn void ConnLimiter.init(&self, usz max)
+fn void Socks5ConnLimiter.init(&self, usz max)
 {
 	self.lock.init()!!;
 	self.max = max;
 	self.current = 0;
 }
 
-fn bool ConnLimiter.try_acquire(&self)
+fn bool Socks5ConnLimiter.try_acquire(&self)
 {
 	self.lock.lock()!!;
 	defer self.lock.unlock();
@@ -66,7 +66,7 @@ fn bool ConnLimiter.try_acquire(&self)
 	return true;
 }
 
-fn void ConnLimiter.release(&self)
+fn void Socks5ConnLimiter.release(&self)
 {
 	self.lock.lock()!!;
 	defer self.lock.unlock();
@@ -78,12 +78,12 @@ fn void ConnLimiter.release(&self)
 	if (self.current > 0) self.current--;
 }
 
-struct Server
+struct Socks5Server
 {
 	TcpServerSocket listener;
 	bool allow_no_auth;
 	AuthCheckFn auth_check; // null => USERNAME_PASSWORD is never offered
-	ConnLimiter limiter;
+	Socks5ConnLimiter limiter;
 }
 
 <*
@@ -91,20 +91,20 @@ struct Server
  phase (HANDSHAKE_TIMEOUT total, from `start`, not per read). See the
  module comment above.
 *>
-struct DeadlineReader (InStream)
+struct Socks5DeadlineReader (InStream)
 {
 	Socket* sock;
 	Clock start;
 }
 
-fn Duration DeadlineReader.remaining(&self)
+fn Duration Socks5DeadlineReader.remaining(&self)
 {
 	Duration elapsed = self.start.to_now().to_duration();
 	if (elapsed >= HANDSHAKE_TIMEOUT) return (Duration)0;
 	return HANDSHAKE_TIMEOUT - elapsed;
 }
 
-fn sz? DeadlineReader.read(&self, char[] buffer) @dynamic
+fn sz? Socks5DeadlineReader.read(&self, char[] buffer) @dynamic
 {
 	Duration left = self.remaining();
 	if (left <= (Duration)0) return TIMEOUT~;
@@ -114,7 +114,7 @@ fn sz? DeadlineReader.read(&self, char[] buffer) @dynamic
 	return self.sock.read(buffer);
 }
 
-fn char? DeadlineReader.read_byte(&self) @dynamic
+fn char? Socks5DeadlineReader.read_byte(&self) @dynamic
 {
 	char[1] b;
 	sz got = self.read(&b)!;
@@ -122,7 +122,7 @@ fn char? DeadlineReader.read_byte(&self) @dynamic
 	return b[0];
 }
 
-fn Server*? Server.listen(&self, String host, int port)
+fn Socks5Server*? Socks5Server.listen(&self, String host, int port)
 {
 	self.listener = tcp::listen(host, port, LISTEN_BACKLOG, REUSEADDR)!;
 	return self;
@@ -135,7 +135,7 @@ fn Server*? Server.listen(&self, String host, int port)
  without running any SOCKS5 negotiation. Returns only if the listening
  socket itself fails.
 *>
-fn void? Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check, usz max_connections = DEFAULT_MAX_CONNECTIONS)
+fn void? Socks5Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check, usz max_connections = DEFAULT_MAX_CONNECTIONS)
 {
 	self.allow_no_auth = allow_no_auth;
 	self.auth_check = auth_check;
@@ -149,7 +149,7 @@ fn void? Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check,
 			(void)conn.close();
 			continue;
 		}
-		ConnArgs* args = mem::new(ConnArgs, { .server = self, .conn = conn });
+		Socks5ConnArgs* args = mem::new(Socks5ConnArgs, { .server = self, .conn = conn });
 		Thread t;
 		if (catch t.create(&handle_connection_thread, args))
 		{
@@ -162,16 +162,16 @@ fn void? Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check,
 	}
 }
 
-struct ConnArgs
+struct Socks5ConnArgs
 {
-	Server* server;
+	Socks5Server* server;
 	TcpSocket conn;
 }
 
 fn int handle_connection_thread(void* arg)
 {
-	ConnArgs* args = (ConnArgs*)arg;
-	Server* server = args.server;
+	Socks5ConnArgs* args = (Socks5ConnArgs*)arg;
+	Socks5Server* server = args.server;
 	TcpSocket conn = args.conn;
 	mem::free(args);
 	handle_connection(server, &conn);
@@ -180,10 +180,10 @@ fn int handle_connection_thread(void* arg)
 	return 0;
 }
 
-fn void handle_connection(Server* server, TcpSocket* conn)
+fn void handle_connection(Socks5Server* server, TcpSocket* conn)
 {
 	// Each connection runs on its own spawned thread (see
-	// Server.serve_forever); `tmem` is only auto-created on the main
+	// Socks5Server.serve_forever); `tmem` is only auto-created on the main
 	// thread — plain `@pool()` isn't enough either, it derives from that
 	// same on-demand allocator internally. `@pool_init` creates one from
 	// scratch, which is what every call in this connection's lifetime
@@ -192,7 +192,7 @@ fn void handle_connection(Server* server, TcpSocket* conn)
 	// 65507-byte UDP datagram) needs, for the whole connection.
 	@pool_init(mem, 65536)
 	{
-		DeadlineReader dr = { .sock = (Socket*)conn, .start = clock::now() };
+		Socks5DeadlineReader dr = { .sock = (Socket*)conn, .start = clock::now() };
 		// Any protocol, auth, or I/O fault before the request is decoded:
 		// drop the connection silently, matching ordinary proxy behaviour
 		// (RFC 1928 does not define an error channel before the method is
@@ -202,7 +202,7 @@ fn void handle_connection(Server* server, TcpSocket* conn)
 	};
 }
 
-fn void? negotiate_and_serve(Server* server, TcpSocket* conn, InStream in)
+fn void? negotiate_and_serve(Socks5Server* server, TcpSocket* conn, InStream in)
 {
 	Method selected = negotiate_method(server, in, conn)!;
 	if (selected == USERNAME_PASSWORD) authenticate(server, in, conn)!;
@@ -212,10 +212,10 @@ fn void? negotiate_and_serve(Server* server, TcpSocket* conn, InStream in)
 	// (0x07) / ADDRESS_TYPE_NOT_SUPPORTED (0x08) — rather than a silent
 	// drop. decode_request faults before VER/RSV are fully malformed and
 	// still get dropped silently (no address to reply to the client).
-	proto::Request? req = proto::decode_request(in, tmem);
+	proto::Socks5Request? req = proto::decode_request(in, tmem);
 	if (catch err = req)
 	{
-		Address empty = { .atype = IPV4 };
+		Socks5Address empty = { .atype = IPV4 };
 		switch (err)
 		{
 			case proto::UNSUPPORTED_COMMAND:
@@ -229,7 +229,7 @@ fn void? negotiate_and_serve(Server* server, TcpSocket* conn, InStream in)
 	dispatch(conn, req);
 }
 
-fn Method? negotiate_method(Server* server, InStream in, OutStream out)
+fn Method? negotiate_method(Socks5Server* server, InStream in, OutStream out)
 {
 	char[] methods = proto::decode_greeting(in, tmem)!;
 	Method selected = NO_ACCEPTABLE;
@@ -246,15 +246,15 @@ fn Method? negotiate_method(Server* server, InStream in, OutStream out)
 	return selected;
 }
 
-fn void? authenticate(Server* server, InStream in, OutStream out)
+fn void? authenticate(Socks5Server* server, InStream in, OutStream out)
 {
-	proto::UserpassRequest req = proto::decode_userpass_request(in, tmem)!;
+	proto::Socks5UserpassRequest req = proto::decode_userpass_request(in, tmem)!;
 	bool ok = server.auth_check(req.username, req.password);
 	proto::encode_userpass_reply(out, ok)!;
 	if (!ok) return AUTH_FAILED~;
 }
 
-fn void dispatch(TcpSocket* conn, proto::Request req)
+fn void dispatch(TcpSocket* conn, proto::Socks5Request req)
 {
 	switch (req.cmd)
 	{

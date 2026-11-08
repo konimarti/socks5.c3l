@@ -61,7 +61,7 @@ fn void? authenticate(TcpSocket* sock, String username, String password)
  Send a request and read the server's full reply (REP code + BND.ADDR).
  The reply's domain, if any, is allocated with tmem.
 *>
-fn proto::Reply? send_request(TcpSocket* sock, proto::Command cmd, proto::Address dst)
+fn proto::Socks5Reply? send_request(TcpSocket* sock, proto::Command cmd, proto::Socks5Address dst)
 {
 	proto::encode_request(sock, cmd, dst)!;
 	return proto::decode_reply(sock, tmem);
@@ -74,7 +74,7 @@ fn proto::Reply? send_request(TcpSocket* sock, proto::Command cmd, proto::Addres
  send a literal address through as DOMAIN would fail against most real
  proxies); anything else goes out as DOMAIN for the proxy to resolve.
 *>
-fn proto::Address make_address(String host, ushort port)
+fn proto::Socks5Address make_address(String host, ushort port)
 {
 	InetAddress? ip4 = net::ipv4_from_str(host);
 	if (try ip = ip4)
@@ -88,7 +88,7 @@ fn proto::Address make_address(String host, ushort port)
 	InetAddress? ip6 = net::ipv6_from_str(host);
 	if (try ip = ip6)
 	{
-		proto::Address addr = { .atype = proto::AddressType.IPV6, .port = port };
+		proto::Socks5Address addr = { .atype = proto::AddressType.IPV6, .port = port };
 		mem::copy(&addr.ipv6, &ip.ipv6, 16);
 		return addr;
 	}
@@ -143,7 +143,7 @@ fn void? handshake(TcpSocket* sock, String username, String password)
 fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Reply reply = send_request(sock, proto::Command.CONNECT, make_address(dst_host, dst_port))!;
+	proto::Socks5Reply reply = send_request(sock, proto::Command.CONNECT, make_address(dst_host, dst_port))!;
 	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return *sock;
 }
@@ -156,10 +156,10 @@ fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, St
  raw socket call) — then call bind_wait() on `control` to block for
  that peer and get a socket ready to relay data with it.
 *>
-struct BindListener
+struct Socks5BindListener
 {
 	TcpSocket control;
-	proto::Address bound_addr;
+	proto::Socks5Address bound_addr;
 }
 
 <*
@@ -171,10 +171,10 @@ struct BindListener
  @return? AUTH_FAILED
  @return? REQUEST_FAILED : "the first BIND reply was not SUCCEEDED"
 *>
-fn BindListener? bind(String proxy_host, int proxy_port, String dst_host, ushort dst_port, String username = "", String password = "")
+fn Socks5BindListener? bind(String proxy_host, int proxy_port, String dst_host, ushort dst_port, String username = "", String password = "")
 {
 	TcpSocket sock = dial(proxy_host, proxy_port)!;
-	BindListener? result = bind_over(&sock, dst_host, dst_port, username, password);
+	Socks5BindListener? result = bind_over(&sock, dst_host, dst_port, username, password);
 	if (catch err = result)
 	{
 		(void)sock.close();
@@ -183,10 +183,10 @@ fn BindListener? bind(String proxy_host, int proxy_port, String dst_host, ushort
 	return result;
 }
 
-fn BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
+fn Socks5BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Reply reply = send_request(sock, proto::Command.BIND, make_address(dst_host, dst_port))!;
+	proto::Socks5Reply reply = send_request(sock, proto::Command.BIND, make_address(dst_host, dst_port))!;
 	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .control = *sock, .bound_addr = reply.bnd };
 }
@@ -198,10 +198,10 @@ fn BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, St
  lets a caller confirm the peer matches who it expected, e.g. active
  FTP checking the PORT connection came from the expected server.
 *>
-struct BindConnection
+struct Socks5BindConnection
 {
 	TcpSocket socket;
-	proto::Address peer_addr;
+	proto::Socks5Address peer_addr;
 }
 
 <*
@@ -213,9 +213,9 @@ struct BindConnection
  udp_associate_over.
  @return? REQUEST_FAILED : "the second BIND reply was not SUCCEEDED"
 *>
-fn BindConnection? bind_wait(TcpSocket* sock)
+fn Socks5BindConnection? bind_wait(TcpSocket* sock)
 {
-	proto::Reply reply = proto::decode_reply(sock, tmem)!;
+	proto::Socks5Reply reply = proto::decode_reply(sock, tmem)!;
 	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .socket = *sock, .peer_addr = reply.bnd };
 }
@@ -229,10 +229,10 @@ fn BindConnection? bind_wait(TcpSocket* sock)
  open for as long as the association is needed — closing it tears the
  relay down, same as the server side.
 *>
-struct UdpAssociation
+struct Socks5UdpAssociation
 {
 	TcpSocket control;
-	proto::Address relay_addr;
+	proto::Socks5Address relay_addr;
 }
 
 <*
@@ -244,10 +244,10 @@ struct UdpAssociation
  @return? AUTH_FAILED
  @return? REQUEST_FAILED : "the UDP ASSOCIATE reply was not SUCCEEDED"
 *>
-fn UdpAssociation? udp_associate(String proxy_host, int proxy_port, String client_host = "0.0.0.0", ushort client_port = 0, String username = "", String password = "")
+fn Socks5UdpAssociation? udp_associate(String proxy_host, int proxy_port, String client_host = "0.0.0.0", ushort client_port = 0, String username = "", String password = "")
 {
 	TcpSocket sock = dial(proxy_host, proxy_port)!;
-	UdpAssociation? result = udp_associate_over(&sock, client_host, client_port, username, password);
+	Socks5UdpAssociation? result = udp_associate_over(&sock, client_host, client_port, username, password);
 	if (catch err = result)
 	{
 		(void)sock.close();
@@ -256,10 +256,10 @@ fn UdpAssociation? udp_associate(String proxy_host, int proxy_port, String clien
 	return result;
 }
 
-fn UdpAssociation? udp_associate_over(TcpSocket* sock, String client_host, ushort client_port, String username, String password)
+fn Socks5UdpAssociation? udp_associate_over(TcpSocket* sock, String client_host, ushort client_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Reply reply = send_request(sock, proto::Command.UDP_ASSOCIATE, make_address(client_host, client_port))!;
+	proto::Socks5Reply reply = send_request(sock, proto::Command.UDP_ASSOCIATE, make_address(client_host, client_port))!;
 	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .control = *sock, .relay_addr = reply.bnd };
 }

@@ -68,7 +68,7 @@ fn proto::ReplyCode map_connect_error(fault err)
  DOMAIN: direct domain string
  IPV6: hex groups
 *>
-fn String? dst_to_host(proto::Address dst, char[] out_buf)
+fn String? dst_to_host(proto::Socks5Address dst, char[] out_buf)
 {
 	switch (dst.atype)
 	{
@@ -94,11 +94,11 @@ fn String? dst_to_host(proto::Address dst, char[] out_buf)
 }
 
 <*
- Extracts the local bound address of a socket as a proto::Address.
+ Extracts the local bound address of a socket as a proto::Socks5Address.
 *>
-fn proto::Address socket_local_address(Socket* s)
+fn proto::Socks5Address socket_local_address(Socket* s)
 {
-	proto::Address out = { .atype = IPV4 };
+	proto::Socks5Address out = { .atype = IPV4 };
 	if (try port = s.local_port()) out.port = port;
 
 	if (try laddr = s.local_address())
@@ -118,11 +118,11 @@ fn proto::Address socket_local_address(Socket* s)
 }
 
 <*
- Extracts the peer connected address of a socket as a proto::Address.
+ Extracts the peer connected address of a socket as a proto::Socks5Address.
 *>
-fn proto::Address socket_peer_address(Socket* s)
+fn proto::Socks5Address socket_peer_address(Socket* s)
 {
-	proto::Address out = { .atype = IPV4 };
+	proto::Socks5Address out = { .atype = IPV4 };
 	if (try port = s.peer_port()) out.port = port;
 
 	if (try paddr = s.peer_address())
@@ -147,9 +147,9 @@ fn bool sockaddr_to_inet(SockAddrPtr sa, Socklen_t sa_len, InetAddress* out_addr
 	return sockaddr::sockaddr_decode(((char*)sa)[:sa_len], out_addr, null);
 }
 
-fn void handle_connect(TcpSocket* conn, proto::Address dst)
+fn void handle_connect(TcpSocket* conn, proto::Socks5Address dst)
 {
-	proto::Address empty_addr = { .atype = IPV4 };
+	proto::Socks5Address empty_addr = { .atype = IPV4 };
 
 	// Case 1: IPV4 or IPV6 literal destination — check ACL before dialing.
 	if (dst.atype == IPV4 || dst.atype == IPV6)
@@ -188,7 +188,7 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 		}
 		defer (void)target.close();
 
-		proto::Address bnd = socket_local_address((Socket*)&target);
+		proto::Socks5Address bnd = socket_local_address((Socket*)&target);
 		if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
 
 		relay::relay_bidirectional((Socket*)conn, (Socket*)&target);
@@ -264,7 +264,7 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 		}
 		defer (void)real_target.close();
 
-		proto::Address bnd = socket_local_address((Socket*)&real_target);
+		proto::Socks5Address bnd = socket_local_address((Socket*)&real_target);
 		if (catch proto::encode_reply(conn, SUCCEEDED, bnd)) return;
 
 		relay::relay_bidirectional((Socket*)conn, (Socket*)&real_target);
@@ -275,9 +275,9 @@ fn void handle_connect(TcpSocket* conn, proto::Address dst)
 	(void)proto::encode_reply(conn, ADDRESS_TYPE_NOT_SUPPORTED, empty_addr);
 }
 
-fn void handle_bind(TcpSocket* conn, proto::Address dst)
+fn void handle_bind(TcpSocket* conn, proto::Socks5Address dst)
 {
-	proto::Address empty_addr = { .atype = IPV4 };
+	proto::Socks5Address empty_addr = { .atype = IPV4 };
 
 	// Bind to the same interface conn arrived on, with a wildcard
 	// fallback in the matching address family (an IPv6 connection must
@@ -310,7 +310,7 @@ fn void handle_bind(TcpSocket* conn, proto::Address dst)
 	// First reply: listener's bound address and ephemeral port. A
 	// wildcard bind reports the wildcard address back, not a reachable
 	// one; substitute conn's local address in the matching family.
-	proto::Address listener_bnd = socket_local_address((Socket*)&listener);
+	proto::Socks5Address listener_bnd = socket_local_address((Socket*)&listener);
 	if (try cl = conn_local)
 	{
 		if (listener_bnd.atype == IPV4 && listener_bnd.ipv4 == { 0, 0, 0, 0 } && !cl.is_ipv6)
@@ -368,7 +368,7 @@ fn void handle_bind(TcpSocket* conn, proto::Address dst)
 	(void)listener.close();
 
 	// Second reply: peer address of accepted connection.
-	proto::Address peer_bnd = socket_peer_address((Socket*)&accepted);
+	proto::Socks5Address peer_bnd = socket_peer_address((Socket*)&accepted);
 	if (catch proto::encode_reply(conn, SUCCEEDED, peer_bnd)) return;
 
 	relay::relay_bidirectional((Socket*)conn, (Socket*)&accepted);
