@@ -9,20 +9,28 @@ and client sides of RFC 1928 (SOCKS Protocol Version 5) and RFC 1929
 - Full command set: CONNECT, BIND, UDP ASSOCIATE.
 - All address types: IPv4, IPv6, domain name.
 - NO AUTH and username/password authentication.
-- Pure wire-format codec (`socks5::proto`), independent of sockets — fast to
-  test, easy to reuse.
+- Pure wire format codec (`socks5::proto`), independent of sockets, so it is
+  fast to test and easy to reuse.
 - Two CLI binaries: `socks5-server` and `socks5-client`, for running or
   testing a proxy from the command line.
-- 63 unit tests; interop-verified against real `curl` and real HTTP/HTTPS
-  traffic, not just self-pairing.
+- 63 unit tests; interop verified against real `curl` and real HTTP/HTTPS
+  traffic, not just self pairing.
 
 ## Why
 
-Most SOCKS5 implementations are either client-only or bolted onto something
-larger. This is a standalone library: server and client, nothing else, built
-to be embedded in another C3 project or run as-is.
+Most SOCKS5 implementations only cover the client, or are bolted onto
+something larger. This is a standalone library: server and client, nothing
+else, built to be embedded in another C3 project or run as is.
 
 ## Install
+
+With [c3l](https://github.com/konimarti/c3l), the C3 package manager:
+
+```sh
+c3l add github.com/<you>/socks5.c3l
+```
+
+Or clone it directly and build with `c3c`:
 
 ```sh
 git clone https://github.com/<you>/socks5.c3l
@@ -48,6 +56,15 @@ import socks5::client;
 TcpSocket sock = client::connect("127.0.0.1", 1080, "example.com", 443)!;
 ```
 
+`client` and `server` are plain module names, not aliases, so if a project
+also imports another protocol's `client` or `server` module, C3 will reject
+any bare call as ambiguous. Qualify the call with the full path in that
+case, which always resolves regardless of what else is imported:
+
+```c3
+socks5::client::connect("127.0.0.1", 1080, "example.com", 443)!;
+```
+
 ## Use the binaries
 
 ```sh
@@ -69,10 +86,10 @@ c3c test test
 
 ## Scope
 
-GSSAPI authentication and UDP datagram fragmentation are not implemented —
+GSSAPI authentication and UDP datagram fragmentation are not implemented;
 both are rare in practice and out of scope for v1. See the commit history
-for other narrowly-scoped v1 limitations.
+for other narrowly scoped v1 limitations.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
