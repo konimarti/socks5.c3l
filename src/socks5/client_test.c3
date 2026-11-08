@@ -141,7 +141,7 @@ fn int fake_server(void* arg)
 module socks5::client @test;
 
 import std::net, std::net::tcp, std::net::os, std::thread, std::time;
-import socks5::proto, socks5::server, socks5::acl;
+import socks5::proto, socks5::server, socks5::acl, socks5::sockaddr;
 
 macro void @expect_fault(#expr, fault want)
 {
@@ -343,7 +343,7 @@ fn void test_udp_associate_round_trip_against_real_server()
 
 	char[128] relay_sa;
 	Socklen_t relay_sa_len = 0;
-	assert(server::address_to_sockaddr(assoc.relay_addr, relay_sa[0..], &relay_sa_len), "convert relay addr");
+	assert(sockaddr::address_to_sockaddr(assoc.relay_addr, relay_sa[0..], &relay_sa_len), "convert relay addr");
 
 	// Send through a real UDP socket, not the control connection — the
 	// relay address is a separate datagram socket (RFC 1928 section 7).

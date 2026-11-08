@@ -48,7 +48,7 @@
 module socks5::server;
 
 import std::net, std::net::tcp, std::net::os, std::io, std::time, libc;
-import socks5::proto, socks5::relay, socks5::acl;
+import socks5::proto, socks5::relay, socks5::acl, socks5::sockaddr;
 
 extern fn sz recvfrom(NativeSocket socket, void* buffer, usz length, CInt flags, SockAddrPtr address, Socklen_t* address_len);
 extern fn sz sendto(NativeSocket socket, void* buffer, usz length, CInt flags, SockAddrPtr address, Socklen_t address_len);
@@ -76,7 +76,7 @@ fn bool decode_sockaddr_to_proto(char[] storage, proto::Address* out_addr)
 {
 	InetAddress ip;
 	ushort port;
-	if (!sockaddr_decode(storage, &ip, &port)) return false;
+	if (!sockaddr::sockaddr_decode(storage, &ip, &port)) return false;
 	out_addr.port = port;
 	if (ip.is_ipv6)
 	{
@@ -96,36 +96,14 @@ fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_le
 	switch (dst.atype)
 	{
 		case IPV4:
-			if (out_sa.len < 16) return false;
-			mem::set(out_sa.ptr, 0, 16);
-			$if env::DARWIN || env::BSD_FAMILY:
-				out_sa[0] = 16;
-				out_sa[1] = (char)os::AF_INET;
-			$else
-				*(ushort*)out_sa.ptr = (ushort)os::AF_INET;
-			$endif
-			out_sa[2] = (char)(dst.port >> 8);
-			out_sa[3] = (char)(dst.port & 0xff);
-			mem::copy(&out_sa[4], &dst.ipv4, 4);
-			*out_len = 16;
+			if (!sockaddr::address_to_sockaddr(dst, out_sa, out_len)) return false;
 			*out_is_v6 = false;
 			out_ip.is_ipv6 = false;
 			out_ip.ipv4 = { .a = dst.ipv4[0], .b = dst.ipv4[1], .c = dst.ipv4[2], .d = dst.ipv4[3] };
 			return true;
 
 		case IPV6:
-			if (out_sa.len < 28) return false;
-			mem::set(out_sa.ptr, 0, 28);
-			$if env::DARWIN || env::BSD_FAMILY:
-				out_sa[0] = 28;
-				out_sa[1] = (char)os::AF_INET6;
-			$else
-				*(ushort*)out_sa.ptr = (ushort)os::AF_INET6;
-			$endif
-			out_sa[2] = (char)(dst.port >> 8);
-			out_sa[3] = (char)(dst.port & 0xff);
-			mem::copy(&out_sa[8], &dst.ipv6, 16);
-			*out_len = 28;
+			if (!sockaddr::address_to_sockaddr(dst, out_sa, out_len)) return false;
 			*out_is_v6 = true;
 			out_ip.is_ipv6 = true;
 			mem::copy(&out_ip.ipv6, &dst.ipv6, 16);
@@ -139,7 +117,7 @@ fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_le
 
 			char[] ai_bytes = ((char*)ai.ai_addr)[:ai.ai_addrlen];
 			InetAddress decoded;
-			if (!sockaddr_decode(ai_bytes, &decoded, null)) return false;
+			if (!sockaddr::sockaddr_decode(ai_bytes, &decoded, null)) return false;
 			*out_is_v6 = decoded.is_ipv6;
 			*out_ip = decoded;
 
@@ -149,48 +127,12 @@ fn bool resolve_destination(proto::Address dst, char[] out_sa, Socklen_t* out_le
 	}
 }
 
-fn bool address_to_sockaddr(proto::Address addr, char[] out_sa, Socklen_t* out_len)
-{
-	InetAddress dummy_ip;
-	bool dummy_is_v6;
-	return resolve_destination(addr, out_sa, out_len, &dummy_ip, &dummy_is_v6);
-}
-
 fn Socket? bind_udp_local(InetAddress addr)
 {
-	char[128] sa;
+	char[28] sa;
 	Socklen_t sa_len = 0;
-	AIFamily family;
-
-	if (addr.is_ipv6)
-	{
-		family = os::AF_INET6;
-		sa_len = 28;
-		mem::set(&sa, 0, 28);
-		$if env::DARWIN || env::BSD_FAMILY:
-			sa[0] = 28;
-			sa[1] = (char)os::AF_INET6;
-		$else
-			*(ushort*)&sa = (ushort)os::AF_INET6;
-		$endif
-		mem::copy(&sa[8], &addr.ipv6, 16);
-	}
-	else
-	{
-		family = os::AF_INET;
-		sa_len = 16;
-		mem::set(&sa, 0, 16);
-		$if env::DARWIN || env::BSD_FAMILY:
-			sa[0] = 16;
-			sa[1] = (char)os::AF_INET;
-		$else
-			*(ushort*)&sa = (ushort)os::AF_INET;
-		$endif
-		sa[4] = addr.ipv4.a;
-		sa[5] = addr.ipv4.b;
-		sa[6] = addr.ipv4.c;
-		sa[7] = addr.ipv4.d;
-	}
+	if (!sockaddr::sockaddr_encode(addr, 0, sa[0..], &sa_len)) return net::GENERAL_ERROR~;
+	AIFamily family = addr.is_ipv6 ? os::AF_INET6 : os::AF_INET;
 
 	NativeSocket fd = os::socket(family, os::SOCK_DGRAM, (AIProtocol)0);
 	if (!fd.is_valid()) return net::GENERAL_ERROR~;

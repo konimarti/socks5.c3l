@@ -152,8 +152,9 @@ fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, St
  The control connection and listening address for an in-progress BIND
  (RFC 1928 section 4/6). `bound_addr` is where the proxy is now
  listening — hand it to whatever needs to connect there (e.g. an FTP
- PORT command) — then call bind_wait() on `control` to block for that
- peer and get a socket ready to relay data with it.
+ PORT command; socks5::sockaddr::address_to_sockaddr formats it for a
+ raw socket call) — then call bind_wait() on `control` to block for
+ that peer and get a socket ready to relay data with it.
 *>
 struct BindListener
 {
@@ -222,10 +223,11 @@ fn BindConnection? bind_wait(TcpSocket* sock)
 <*
  The control connection and relay address for an in-progress UDP
  ASSOCIATE (RFC 1928 section 7). Wrap each outgoing datagram with
- proto::encode_udp_header and send it to `relay_addr`; unwrap incoming
- replies with proto::decode_udp_header. `control` must stay open for
- as long as the association is needed — closing it tears the relay
- down, same as the server side.
+ proto::encode_udp_header and send it to `relay_addr` (formatted for a
+ raw socket call with socks5::sockaddr::address_to_sockaddr); unwrap
+ incoming replies with proto::decode_udp_header. `control` must stay
+ open for as long as the association is needed — closing it tears the
+ relay down, same as the server side.
 *>
 struct UdpAssociation
 {

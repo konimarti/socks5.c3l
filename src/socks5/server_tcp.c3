@@ -38,7 +38,7 @@
 module socks5::server;
 
 import std::net, std::net::tcp, std::net::os, std::time;
-import socks5::proto, socks5::relay, socks5::acl;
+import socks5::proto, socks5::relay, socks5::acl, socks5::sockaddr;
 
 const Duration BIND_TIMEOUT = (Duration)(30L * time::SEC);
 
@@ -144,7 +144,7 @@ fn proto::Address socket_peer_address(Socket* s)
 fn bool sockaddr_to_inet(SockAddrPtr sa, Socklen_t sa_len, InetAddress* out_addr)
 {
 	if (!sa) return false;
-	return sockaddr_decode(((char*)sa)[:sa_len], out_addr, null);
+	return sockaddr::sockaddr_decode(((char*)sa)[:sa_len], out_addr, null);
 }
 
 fn void handle_connect(TcpSocket* conn, proto::Address dst)

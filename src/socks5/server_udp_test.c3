@@ -22,7 +22,7 @@ fn int run_associate_thread(void* arg)
 module socks5::server @test;
 
 import std::net, std::net::tcp, std::net::os, std::thread, std::io, std::time, libc;
-import socks5::proto, socks5::acl;
+import socks5::proto, socks5::acl, socks5::sockaddr;
 
 fn void test_udp_associate_forward_and_reply_and_teardown()
 {
@@ -68,7 +68,7 @@ fn void test_udp_associate_forward_and_reply_and_teardown()
 
 	char[128] proxy_sa;
 	Socklen_t proxy_sa_len = 0;
-	bool ok = address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	bool ok = sockaddr::address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
 	assert(ok, "convert bnd to sockaddr");
 
 	sz sent = sendto(client_udp.sock, req_packet.ptr, req_packet.len, 0, (SockAddrPtr)&proxy_sa, proxy_sa_len);
@@ -140,7 +140,7 @@ fn void test_udp_associate_source_pinning_and_fragment_drop()
 
 	char[128] proxy_sa;
 	Socklen_t proxy_sa_len = 0;
-	(void)address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	(void)sockaddr::address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
 
 	// First datagram from legit client establishes pinning
 	proto::Address target_dst = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
@@ -217,7 +217,7 @@ fn void test_udp_associate_cross_family_ipv4_to_ipv6()
 
 	char[128] proxy_sa;
 	Socklen_t proxy_sa_len = 0;
-	bool ok = address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	bool ok = sockaddr::address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
 	assert(ok, "convert bnd to sockaddr");
 
 	// Destination is IPv6 ::1:target_port
@@ -297,7 +297,7 @@ fn void test_udp_associate_acl_denies_private_destination()
 
 	char[128] proxy_sa;
 	Socklen_t proxy_sa_len = 0;
-	bool ok = address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
+	bool ok = sockaddr::address_to_sockaddr(bnd, proxy_sa[0..], &proxy_sa_len);
 	assert(ok, "convert bnd to sockaddr");
 
 	proto::Address target_dst = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
