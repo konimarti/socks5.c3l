@@ -191,21 +191,32 @@ fn BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, St
 }
 
 <*
+ The control socket and connecting peer's address from a BIND's second
+ reply (RFC 1928 section 6: "the BND.PORT and BND.ADDR fields contain
+ the address and port number of the connecting host"). `peer_addr`
+ lets a caller confirm the peer matches who it expected, e.g. active
+ FTP checking the PORT connection came from the expected server.
+*>
+struct BindConnection
+{
+	TcpSocket socket;
+	proto::Address peer_addr;
+}
+
+<*
  RFC 1928 BIND, part 2: block for the proxy's second reply (sent once a
  peer connects to the address from part 1), and return the same
- control socket, now ready to relay data with that peer. Closes and
- returns a fault if the second reply isn't SUCCEEDED.
+ control socket, now ready to relay data with that peer, plus that
+ peer's address. On any fault, `sock` is left open: ownership stays
+ with the caller on every error path, same as connect_over/bind_over/
+ udp_associate_over.
  @return? REQUEST_FAILED : "the second BIND reply was not SUCCEEDED"
 *>
-fn TcpSocket? bind_wait(TcpSocket* sock)
+fn BindConnection? bind_wait(TcpSocket* sock)
 {
 	proto::Reply reply = proto::decode_reply(sock, tmem)!;
-	if (reply.code != proto::ReplyCode.SUCCEEDED)
-	{
-		(void)sock.close();
-		return REQUEST_FAILED~;
-	}
-	return *sock;
+	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	return { .socket = *sock, .peer_addr = reply.bnd };
 }
 
 <*

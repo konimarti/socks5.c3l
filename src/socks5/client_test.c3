@@ -140,7 +140,7 @@ fn int fake_server(void* arg)
 
 module socks5::client @test;
 
-import std::net, std::net::tcp, std::net::os, std::thread;
+import std::net, std::net::tcp, std::net::os, std::thread, std::time;
 import socks5::proto, socks5::server, socks5::acl;
 
 macro void @expect_fault(#expr, fault want)
@@ -290,7 +290,9 @@ fn void test_bind_round_trip_against_real_server()
 
 	// The peer connects to the address the proxy reported in part 1.
 	TcpSocket peer = tcp::connect("127.0.0.1", (int)listener.bound_addr.port)!!;
-	TcpSocket data_sock = bind_wait(&listener.control)!!;
+	BindConnection conn = bind_wait(&listener.control)!!;
+	TcpSocket data_sock = conn.socket;
+	assert(conn.peer_addr.atype == IPV4, "expected IPV4 peer address on loopback");
 
 	data_sock.write("ping")!!;
 	char[16] buf;
@@ -350,6 +352,12 @@ fn void test_udp_associate_round_trip_against_real_server()
 	sz sent = server::sendto(client_udp.sock, packet.ptr, packet.len, 0, (SockAddrPtr)&relay_sa, relay_sa_len);
 	assert(sent == (sz)packet.len, "sent datagram to relay");
 
+	// Poll with a timeout rather than calling recvfrom directly: a
+	// routing regression should fail this test, not hang it forever.
+	Poll[1] target_poll = { { .socket = target.sock, .events = ANY_READ } };
+	ulong target_ready = net::poll(target_poll[0..], time::sec(1))!!;
+	assert(target_ready > 0, "target did not receive datagram within timeout");
+
 	char[256] target_buf;
 	char[128] from_sa;
 	Socklen_t from_len = (Socklen_t)from_sa.len;
@@ -360,6 +368,10 @@ fn void test_udp_associate_round_trip_against_real_server()
 	char[] reply = "hello from target";
 	sz replied = server::sendto(target.sock, reply.ptr, reply.len, 0, (SockAddrPtr)&from_sa, from_len);
 	assert(replied == (sz)reply.len, "target sent reply");
+
+	Poll[1] client_poll = { { .socket = client_udp.sock, .events = ANY_READ } };
+	ulong client_ready = net::poll(client_poll[0..], time::sec(1))!!;
+	assert(client_ready > 0, "client did not receive reply datagram within timeout");
 
 	char[256] client_buf;
 	Socklen_t reply_from_len = (Socklen_t)128;
