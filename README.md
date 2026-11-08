@@ -13,7 +13,7 @@ and client sides of RFC 1928 (SOCKS Protocol Version 5) and RFC 1929
   fast to test and easy to reuse.
 - Two CLI binaries: `socks5-server` and `socks5-client`, for running or
   testing a proxy from the command line.
-- 63 unit tests; interop verified against real `curl` and real HTTP/HTTPS
+- 88 unit tests; interop verified against real `curl` and real HTTP/HTTPS
   traffic, not just self pairing.
 
 ## Why
