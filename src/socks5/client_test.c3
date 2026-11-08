@@ -7,7 +7,45 @@
 module socks5::client;
 
 import std::net, std::net::tcp, std::io;
-import socks5::proto;
+import socks5::proto, socks5::server;
+
+<*
+ BIND and UDP ASSOCIATE are tested against the real socks5::server, not
+ a fake — RFC 1928's two-reply BIND handshake and the UDP relay's exact
+ datagram framing are too easy to get subtly wrong on both ends of a
+ hand-rolled fake and still agree with each other. Running the real
+ server is the same "don't trust self-pairing alone" principle this
+ project applies elsewhere, just within one process instead of against
+ curl/ssh.
+
+ Deliberately NOT Server.serve_forever(): that loop never returns, so
+ the thread running it would outlive the test function — a Server
+ struct on this function's stack would then be read by a thread after
+ its frame is reused by the next test (this happened: a corrupted-
+ mutex panic turned up in an unrelated LATER test, where the clobbered
+ stack memory next got reused), and even heap-allocating it to dodge
+ that just trades one problem for another (the per-test leak checker
+ flags the intentionally-never-freed allocation as a leak). Instead,
+ this accepts and fully handles exactly ONE connection via the same
+ production handle_connection() serve_forever() itself calls, then
+ returns — no infinite loop, nothing to outlive the test.
+*>
+struct OneShotArgs
+{
+	TcpServerSocket* listener;
+	server::Server* config; // only allow_no_auth/auth_check are read; no .listen()/limiter needed
+}
+
+fn int run_one_connection(void* arg)
+{
+	OneShotArgs* a = (OneShotArgs*)arg;
+	TcpSocket? c = tcp::accept(a.listener);
+	if (catch c) return 1;
+	TcpSocket conn = c;
+	server::handle_connection(a.config, &conn);
+	(void)conn.close();
+	return 0;
+}
 
 struct FakeServerArgs
 {
@@ -102,8 +140,8 @@ fn int fake_server(void* arg)
 
 module socks5::client @test;
 
-import std::net, std::net::tcp, std::thread;
-import socks5::proto;
+import std::net, std::net::tcp, std::net::os, std::thread;
+import socks5::proto, socks5::server, socks5::acl;
 
 macro void @expect_fault(#expr, fault want)
 {
@@ -232,5 +270,109 @@ fn void test_connect_request_refused()
 	t.create(&fake_server, &args)!!;
 
 	@expect_fault(connect("127.0.0.1", (int)port, "example.com", (ushort)80), REQUEST_FAILED);
+	t.join()!!;
+}
+
+fn void test_bind_round_trip_against_real_server()
+{
+	TcpServerSocket proxy_listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
+	defer (void)proxy_listener.close();
+	ushort proxy_port = proxy_listener.local_port()!!;
+
+	server::Server config;
+	config.allow_no_auth = true;
+	OneShotArgs args = { .listener = &proxy_listener, .config = &config };
+	Thread t;
+	t.create(&run_one_connection, &args)!!;
+
+	BindListener listener = bind("127.0.0.1", (int)proxy_port, "0.0.0.0", (ushort)0)!!;
+	assert(listener.bound_addr.atype == IPV4, "expected IPV4 bind address on loopback");
+
+	// The peer connects to the address the proxy reported in part 1.
+	TcpSocket peer = tcp::connect("127.0.0.1", (int)listener.bound_addr.port)!!;
+	TcpSocket data_sock = bind_wait(&listener.control)!!;
+
+	data_sock.write("ping")!!;
+	char[16] buf;
+	sz n = peer.read(&buf)!!;
+	assert((String)buf[:n] == "ping", "peer did not receive ping");
+
+	peer.write("pong")!!;
+	n = data_sock.read(&buf)!!;
+	assert((String)buf[:n] == "pong", "client did not receive pong");
+
+	// Closing both ends the handler's relay loop, letting
+	// run_one_connection's thread return so join() doesn't hang.
+	(void)peer.close();
+	(void)data_sock.close();
+	t.join()!!;
+}
+
+fn void test_udp_associate_round_trip_against_real_server()
+{
+	// The target address below is loopback (127.0.0.1), denied by the
+	// default ACL (sprint 2) — same as the other UDP-to-loopback tests
+	// in server_udp_test.c3, disable it for this test.
+	acl::configure(true);
+	defer acl::configure(false);
+
+	// See test_bind_round_trip_against_real_server's comment: one
+	// accepted connection, handled once, thread returns on its own —
+	// no infinite serve_forever() loop to outlive this function.
+	TcpServerSocket proxy_listener = tcp::listen("127.0.0.1", 0, 4, REUSEADDR)!!;
+	defer (void)proxy_listener.close();
+	ushort proxy_port = proxy_listener.local_port()!!;
+
+	server::Server config;
+	config.allow_no_auth = true;
+	OneShotArgs args = { .listener = &proxy_listener, .config = &config };
+	Thread t;
+	t.create(&run_one_connection, &args)!!;
+
+	UdpAssociation assoc = udp_associate("127.0.0.1", (int)proxy_port)!!;
+
+	Socket target = server::bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
+	defer (void)target.close();
+	ushort target_port = target.local_port()!!;
+
+	proto::Address target_addr = { .atype = IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = target_port };
+	char[] payload = "hello from client";
+	char[] packet = proto::encode_udp_header(tmem, target_addr, payload)!!;
+
+	char[128] relay_sa;
+	Socklen_t relay_sa_len = 0;
+	assert(server::address_to_sockaddr(assoc.relay_addr, relay_sa[0..], &relay_sa_len), "convert relay addr");
+
+	// Send through a real UDP socket, not the control connection — the
+	// relay address is a separate datagram socket (RFC 1928 section 7).
+	Socket client_udp = server::bind_udp_socket("127.0.0.1", 0, os::AF_INET)!!;
+	defer (void)client_udp.close();
+	sz sent = server::sendto(client_udp.sock, packet.ptr, packet.len, 0, (SockAddrPtr)&relay_sa, relay_sa_len);
+	assert(sent == (sz)packet.len, "sent datagram to relay");
+
+	char[256] target_buf;
+	char[128] from_sa;
+	Socklen_t from_len = (Socklen_t)from_sa.len;
+	sz got = server::recvfrom(target.sock, &target_buf, target_buf.len, 0, (SockAddrPtr)&from_sa, &from_len);
+	assert(got == (sz)payload.len, "target received correct length");
+	assert((String)target_buf[:got] == (String)payload, "target received correct payload");
+
+	char[] reply = "hello from target";
+	sz replied = server::sendto(target.sock, reply.ptr, reply.len, 0, (SockAddrPtr)&from_sa, from_len);
+	assert(replied == (sz)reply.len, "target sent reply");
+
+	char[256] client_buf;
+	Socklen_t reply_from_len = (Socklen_t)128;
+	char[128] reply_from_sa;
+	got = server::recvfrom(client_udp.sock, &client_buf, client_buf.len, 0, (SockAddrPtr)&reply_from_sa, &reply_from_len);
+	assert(got > 0, "client received reply datagram");
+
+	proto::UdpDatagram reply_dgram = proto::decode_udp_header(client_buf[:got], tmem)!!;
+	assert((String)reply_dgram.payload == (String)reply, "client received correct reply payload");
+
+	// Closing the control connection ends the association (RFC 1928
+	// section 7), letting run_one_connection's thread return so join()
+	// doesn't hang.
+	(void)assoc.control.close();
 	t.join()!!;
 }

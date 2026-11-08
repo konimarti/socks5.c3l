@@ -126,14 +126,127 @@ fn TcpSocket? connect(String proxy_host, int proxy_port, String dst_host, ushort
 	return sock;
 }
 
-fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
+<*
+ The negotiate-then-optionally-authenticate sequence every command
+ shares, factored out so CONNECT/BIND/UDP_ASSOCIATE don't each
+ reimplement it.
+*>
+fn void? handshake(TcpSocket* sock, String username, String password)
 {
 	Method[2] offered = { NO_AUTH, USERNAME_PASSWORD };
 	Method[] methods = offered[:1];
 	if (username.len > 0) methods = offered[0..];
 	Method selected = negotiate_method(sock, methods)!;
 	if (selected == USERNAME_PASSWORD) authenticate(sock, username, password)!;
+}
+
+fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
+{
+	handshake(sock, username, password)!;
 	proto::Reply reply = send_request(sock, proto::Command.CONNECT, make_address(dst_host, dst_port))!;
 	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return *sock;
+}
+
+<*
+ The control connection and listening address for an in-progress BIND
+ (RFC 1928 section 4/6). `bound_addr` is where the proxy is now
+ listening — hand it to whatever needs to connect there (e.g. an FTP
+ PORT command) — then call bind_wait() on `control` to block for that
+ peer and get a socket ready to relay data with it.
+*>
+struct BindListener
+{
+	TcpSocket control;
+	proto::Address bound_addr;
+}
+
+<*
+ RFC 1928 BIND, part 1: dial, handshake, send BIND for `dst_host:
+ dst_port` (the peer address the proxy expects — many real proxies
+ accept any peer regardless), and return the listening address from
+ the first reply.
+ @return? NO_ACCEPTABLE_METHODS
+ @return? AUTH_FAILED
+ @return? REQUEST_FAILED : "the first BIND reply was not SUCCEEDED"
+*>
+fn BindListener? bind(String proxy_host, int proxy_port, String dst_host, ushort dst_port, String username = "", String password = "")
+{
+	TcpSocket sock = dial(proxy_host, proxy_port)!;
+	BindListener? result = bind_over(&sock, dst_host, dst_port, username, password);
+	if (catch err = result)
+	{
+		(void)sock.close();
+		return err~;
+	}
+	return result;
+}
+
+fn BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
+{
+	handshake(sock, username, password)!;
+	proto::Reply reply = send_request(sock, proto::Command.BIND, make_address(dst_host, dst_port))!;
+	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	return { .control = *sock, .bound_addr = reply.bnd };
+}
+
+<*
+ RFC 1928 BIND, part 2: block for the proxy's second reply (sent once a
+ peer connects to the address from part 1), and return the same
+ control socket, now ready to relay data with that peer. Closes and
+ returns a fault if the second reply isn't SUCCEEDED.
+ @return? REQUEST_FAILED : "the second BIND reply was not SUCCEEDED"
+*>
+fn TcpSocket? bind_wait(TcpSocket* sock)
+{
+	proto::Reply reply = proto::decode_reply(sock, tmem)!;
+	if (reply.code != proto::ReplyCode.SUCCEEDED)
+	{
+		(void)sock.close();
+		return REQUEST_FAILED~;
+	}
+	return *sock;
+}
+
+<*
+ The control connection and relay address for an in-progress UDP
+ ASSOCIATE (RFC 1928 section 7). Wrap each outgoing datagram with
+ proto::encode_udp_header and send it to `relay_addr`; unwrap incoming
+ replies with proto::decode_udp_header. `control` must stay open for
+ as long as the association is needed — closing it tears the relay
+ down, same as the server side.
+*>
+struct UdpAssociation
+{
+	TcpSocket control;
+	proto::Address relay_addr;
+}
+
+<*
+ RFC 1928 UDP ASSOCIATE: dial, handshake, send UDP_ASSOCIATE advertising
+ `client_host:client_port` as this client's own UDP source (0.0.0.0:0,
+ the defaults, is fine — most proxies don't require a real one), and
+ return the relay address from the reply.
+ @return? NO_ACCEPTABLE_METHODS
+ @return? AUTH_FAILED
+ @return? REQUEST_FAILED : "the UDP ASSOCIATE reply was not SUCCEEDED"
+*>
+fn UdpAssociation? udp_associate(String proxy_host, int proxy_port, String client_host = "0.0.0.0", ushort client_port = 0, String username = "", String password = "")
+{
+	TcpSocket sock = dial(proxy_host, proxy_port)!;
+	UdpAssociation? result = udp_associate_over(&sock, client_host, client_port, username, password);
+	if (catch err = result)
+	{
+		(void)sock.close();
+		return err~;
+	}
+	return result;
+}
+
+fn UdpAssociation? udp_associate_over(TcpSocket* sock, String client_host, ushort client_port, String username, String password)
+{
+	handshake(sock, username, password)!;
+	proto::Reply reply = send_request(sock, proto::Command.UDP_ASSOCIATE, make_address(client_host, client_port))!;
+	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	return { .control = *sock, .relay_addr = reply.bnd };
 }

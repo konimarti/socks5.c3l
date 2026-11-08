@@ -6,4 +6,5 @@ tags
 design.md
 .claude/
 test
+test_*
 reviews/*.md
