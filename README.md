@@ -56,21 +56,6 @@ import socks5::client;
 TcpSocket sock = client::connect("127.0.0.1", 1080, "example.com", 443)!;
 ```
 
-`client` and `server` are plain module names, not aliases, so if a project
-also imports another protocol's `client` or `server` module, C3 will reject
-any bare call as ambiguous. Qualify the call with the full path in that
-case, which always resolves regardless of what else is imported:
-
-```c3
-socks5::client::connect("127.0.0.1", 1080, "example.com", 443)!;
-```
-
-Types are named more specifically (`Socks5Server`, `Socks5Address`, ...)
-rather than, say, a bare `Server`/`Address`: a type is referenced in every
-variable declaration and function signature that touches it, not just
-once per call, so qualifying away a collision each time would be far more
-intrusive than for an occasional function call.
-
 ## Use the binaries
 
 ```sh
@@ -114,7 +99,7 @@ With a username/password account instead of `--allow-no-auth`:
 ## Tests
 
 ```sh
-c3c test test
+c3c test
 ```
 
 ## Scope
