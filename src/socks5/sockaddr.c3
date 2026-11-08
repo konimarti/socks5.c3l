@@ -1,18 +1,23 @@
-// Shared raw-sockaddr conversion. Every sockaddr this library reads or
-// builds (from getsockname/getpeername via std::net, from recvfrom's
-// source address, from getaddrinfo's candidate list, and from encoding a
-// proto::Address for sendto/connect/bind) uses the same POSIX layout — a
-// 2-byte family field, a 2-byte big-endian port, then the address bytes
-// (offset 4 for IPv4, 8 for IPv6) — but came from independently
-// reimplemented copies of this logic in server_tcp.c3 and server_udp.c3,
-// flagged by two independent reviews. This is the one copy. std::net has
-// no public equivalent (its own sockaddr handling is @private), and both
-// the server (binding/relaying) and the client (formatting a BIND/UDP
-// ASSOCIATE reply's address for the caller) need it, so it lives in its
-// own module rather than under socks5::server or socks5::client.
+// Shared raw-sockaddr conversion. std::net already decodes a raw sockaddr
+// into an InetAddress and port (decode_sockaddr/decode_port in
+// socket.c3), used internally by Socket.local_address/local_port — just
+// marked @private, so sockaddr_decode below is a thin public wrapper
+// around those (imported with @public) rather than a second
+// implementation. There's no std::net equivalent for the other
+// direction: it never builds a sockaddr from a bare IP+port, only ever
+// consumes ready-made ones from getaddrinfo, because every connect/bind
+// path goes through hostname resolution. This library needs that
+// direction too (formatting a BIND/UDP ASSOCIATE reply's address, which
+// already carries a literal IP, for sendto/connect/bind), so
+// sockaddr_encode is still hand-rolled. Both used to be duplicated
+// across server_tcp.c3 and server_udp.c3 (flagged by two independent
+// reviews); this is the one copy, shared by client and server, hence
+// its own module rather than living under socks5::server or
+// socks5::client.
 module socks5::sockaddr;
 
-import std::net, std::net::os, std::core::mem;
+import std::net @public;
+import std::net::os, std::core::mem;
 import socks5::proto;
 
 <*
@@ -23,34 +28,16 @@ import socks5::proto;
 *>
 fn bool sockaddr_decode(char[] bytes, InetAddress* out_addr, ushort* out_port)
 {
-	if (bytes.len < 8) return false;
-
-	$if env::DARWIN || env::BSD_FAMILY:
-		AIFamily family = (AIFamily)bytes[1];
-	$else
-		AIFamily family = (AIFamily)*(ushort*)bytes.ptr;
-	$endif
-
-	ushort port = ((ushort)(char)bytes[2] << 8) | (ushort)(char)bytes[3];
-
-	switch (family)
+	InetAddress? addr = net::decode_sockaddr(bytes);
+	if (catch addr) return false;
+	*out_addr = addr;
+	if (out_port)
 	{
-		case os::AF_INET:
-			*out_addr = { .ipv4 = { .a = bytes[4], .b = bytes[5], .c = bytes[6], .d = bytes[7] } };
-			if (out_port) *out_port = port;
-			return true;
-
-		case os::AF_INET6:
-			if (bytes.len < 24) return false;
-			InetAddress addr = { .is_ipv6 = true };
-			mem::copy(&addr.ipv6, &bytes[8], 16);
-			*out_addr = addr;
-			if (out_port) *out_port = port;
-			return true;
-
-		default:
-			return false;
+		ushort? port = net::decode_port(bytes);
+		if (catch port) return false;
+		*out_port = port;
 	}
+	return true;
 }
 
 <*
