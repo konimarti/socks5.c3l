@@ -18,7 +18,9 @@ import socks5::proto;
 // accepted limitation as ordinary proxy traffic: a genuinely idle
 // established connection times out via socks5::relay::IDLE_TIMEOUT
 // instead).
-const Duration HANDSHAKE_TIMEOUT = (Duration)(10L * time::SEC);
+const Duration DEFAULT_HANDSHAKE_TIMEOUT = (Duration)(10L * time::SEC);
+Duration g_handshake_timeout = DEFAULT_HANDSHAKE_TIMEOUT;
+fn void configure_handshake_timeout(Duration d) { g_handshake_timeout = d; }
 const int LISTEN_BACKLOG = 64;
 
 // A connection flood with no cap spawns one OS thread per connection
@@ -84,6 +86,7 @@ struct Socks5Server
 	bool allow_no_auth;
 	AuthCheckFn auth_check; // null => USERNAME_PASSWORD is never offered
 	Socks5ConnLimiter limiter;
+	bool shutdown;
 }
 
 <*
@@ -100,8 +103,8 @@ struct Socks5DeadlineReader (InStream)
 fn Duration Socks5DeadlineReader.remaining(&self)
 {
 	Duration elapsed = self.start.to_now().to_duration();
-	if (elapsed >= HANDSHAKE_TIMEOUT) return (Duration)0;
-	return HANDSHAKE_TIMEOUT - elapsed;
+	if (elapsed >= g_handshake_timeout) return (Duration)0;
+	return g_handshake_timeout - elapsed;
 }
 
 fn sz? Socks5DeadlineReader.read(&self, char[] buffer) @dynamic
@@ -133,17 +136,22 @@ fn Socks5Server*? Socks5Server.listen(&self, String host, int port)
  `max_connections` concurrently — beyond that, a new connection is
  accepted (so the listen backlog doesn't back up) and closed immediately
  without running any SOCKS5 negotiation. Returns only if the listening
- socket itself fails.
+ socket itself fails or if stop() is called.
 *>
 fn void? Socks5Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_check, usz max_connections = DEFAULT_MAX_CONNECTIONS)
 {
 	self.allow_no_auth = allow_no_auth;
 	self.auth_check = auth_check;
 	self.limiter.init(max_connections);
-	while (true)
+	self.shutdown = false;
+	while (!self.shutdown)
 	{
 		TcpSocket? conn = tcp::accept(&self.listener);
-		if (catch conn) continue; // a single failed accept must not stop the server
+		if (catch conn)
+		{
+			if (self.shutdown) return;
+			continue; // a single failed accept must not stop the server
+		}
 		if (!self.limiter.try_acquire())
 		{
 			(void)conn.close();
@@ -160,6 +168,13 @@ fn void? Socks5Server.serve_forever(&self, bool allow_no_auth, AuthCheckFn auth_
 		}
 		(void)t.detach();
 	}
+}
+
+fn void Socks5Server.stop(&self)
+{
+	self.shutdown = true;
+	(void)self.listener.shutdown(BOTH);
+	(void)self.listener.close();
 }
 
 struct Socks5ConnArgs

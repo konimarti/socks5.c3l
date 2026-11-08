@@ -40,7 +40,9 @@ module socks5::server;
 import std::net, std::net::tcp, std::net::os, std::time;
 import socks5::proto, socks5::relay, socks5::acl, socks5::sockaddr;
 
-const Duration BIND_TIMEOUT = (Duration)(30L * time::SEC);
+const Duration DEFAULT_BIND_TIMEOUT = (Duration)(30L * time::SEC);
+Duration g_bind_timeout = DEFAULT_BIND_TIMEOUT;
+fn void configure_bind_timeout(Duration d) { g_bind_timeout = d; }
 
 <*
  Maps a dial fault from tcp::connect to the closest SOCKS5 Socks5ReplyCode.
@@ -333,7 +335,7 @@ fn void handle_bind(TcpSocket* conn, proto::Socks5Address dst)
 		{ .socket = listener.sock, .events = ANY_READ },
 		{ .socket = conn.sock, .events = ANY_READ },
 	};
-	ulong? n = net::poll(polls[0..], BIND_TIMEOUT);
+	ulong? n = net::poll(polls[0..], g_bind_timeout);
 	if (catch n) return;
 	if (!n)
 	{
