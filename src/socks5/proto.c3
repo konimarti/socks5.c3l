@@ -9,7 +9,7 @@ const char VERSION = 0x05;
 const char AUTH_VERSION = 0x01;
 const usz MAX_NAME_LEN = 255; // ULEN/PLEN/domain-len are one byte: 1..255
 
-enum Method : char (char wire)
+enum Socks5Method : char (char wire)
 {
 	NO_AUTH            { 0x00 },
 	GSSAPI             { 0x01 },
@@ -17,21 +17,21 @@ enum Method : char (char wire)
 	NO_ACCEPTABLE      { 0xff },
 }
 
-enum Command : char (char wire)
+enum Socks5Command : char (char wire)
 {
 	CONNECT       { 0x01 },
 	BIND          { 0x02 },
 	UDP_ASSOCIATE { 0x03 },
 }
 
-enum AddressType : char (char wire)
+enum Socks5AddressType : char (char wire)
 {
 	IPV4   { 0x01 },
 	DOMAIN { 0x03 },
 	IPV6   { 0x04 },
 }
 
-enum ReplyCode : char (char wire)
+enum Socks5ReplyCode : char (char wire)
 {
 	SUCCEEDED                  { 0x00 },
 	GENERAL_FAILURE            { 0x01 },
@@ -54,7 +54,7 @@ excuse
 	NAME_TOO_LONG,
 }
 
-fn Command? command_from_wire(char w)
+fn Socks5Command? command_from_wire(char w)
 {
 	switch (w)
 	{
@@ -65,7 +65,7 @@ fn Command? command_from_wire(char w)
 	}
 }
 
-fn AddressType? address_type_from_wire(char w)
+fn Socks5AddressType? address_type_from_wire(char w)
 {
 	switch (w)
 	{
@@ -76,7 +76,7 @@ fn AddressType? address_type_from_wire(char w)
 	}
 }
 
-fn Method? method_from_wire(char w)
+fn Socks5Method? method_from_wire(char w)
 {
 	switch (w)
 	{
@@ -88,7 +88,7 @@ fn Method? method_from_wire(char w)
 	}
 }
 
-fn ReplyCode? reply_code_from_wire(char w)
+fn Socks5ReplyCode? reply_code_from_wire(char w)
 {
 	switch (w)
 	{
@@ -107,7 +107,7 @@ fn ReplyCode? reply_code_from_wire(char w)
 
 struct Socks5Address
 {
-	AddressType atype;
+	Socks5AddressType atype;
 	char[4] ipv4;
 	char[16] ipv6;
 	String domain; // set only when atype == DOMAIN; allocated by the decoder's caller
@@ -116,13 +116,13 @@ struct Socks5Address
 
 struct Socks5Request
 {
-	Command cmd;
+	Socks5Command cmd;
 	Socks5Address dst;
 }
 
 struct Socks5Reply
 {
-	ReplyCode code;
+	Socks5ReplyCode code;
 	Socks5Address bnd;
 }
 
@@ -144,12 +144,12 @@ struct Socks5UdpDatagram
  Encode the client's version-identifier/method-selection message.
  @return? NAME_TOO_LONG : "methods.len == 0 or > 255"
 *>
-fn void? encode_greeting(OutStream out, Method[] methods)
+fn void? encode_greeting(OutStream out, Socks5Method[] methods)
 {
 	if (methods.len == 0 || methods.len > MAX_NAME_LEN) return NAME_TOO_LONG~;
 	out.write_byte(VERSION)!;
 	out.write_byte((char)methods.len)!;
-	foreach (Method m : methods) out.write_byte(m.wire)!;
+	foreach (Socks5Method m : methods) out.write_byte(m.wire)!;
 }
 
 <*
@@ -169,13 +169,13 @@ fn char[]? decode_greeting(InStream in, Allocator allocator)
 	return methods;
 }
 
-fn bool methods_contains(char[] methods, Method m)
+fn bool methods_contains(char[] methods, Socks5Method m)
 {
 	foreach (char c : methods) if (c == m.wire) return true;
 	return false;
 }
 
-fn void? encode_method_selection(OutStream out, Method selected)
+fn void? encode_method_selection(OutStream out, Socks5Method selected)
 {
 	char[2] msg = { VERSION, selected.wire };
 	io::write_all(out, &msg)!;
@@ -186,7 +186,7 @@ fn void? encode_method_selection(OutStream out, Method selected)
  @return? UNSUPPORTED_VERSION
  @return? MALFORMED_MESSAGE : "selected method byte is not a known method"
 *>
-fn Method? decode_method_selection(InStream in)
+fn Socks5Method? decode_method_selection(InStream in)
 {
 	char ver = in.read_byte()!;
 	if (ver != VERSION) return UNSUPPORTED_VERSION~;
@@ -309,21 +309,21 @@ fn Socks5Request? decode_request(InStream in, Allocator allocator)
 	char ver = in.read_byte()!;
 	if (ver != VERSION) return UNSUPPORTED_VERSION~;
 	char raw_cmd = in.read_byte()!;
-	Command cmd = command_from_wire(raw_cmd)!;
+	Socks5Command cmd = command_from_wire(raw_cmd)!;
 	char rsv = in.read_byte()!;
 	if (rsv != 0) return MALFORMED_MESSAGE~;
 	Socks5Address dst = decode_address(in, allocator)!;
 	return { .cmd = cmd, .dst = dst };
 }
 
-fn void? encode_reply(OutStream out, ReplyCode code, Socks5Address bnd)
+fn void? encode_reply(OutStream out, Socks5ReplyCode code, Socks5Address bnd)
 {
 	char[3] head = { VERSION, code.wire, 0 };
 	io::write_all(out, &head)!;
 	encode_address(out, bnd)!;
 }
 
-fn void? encode_request(OutStream out, Command cmd, Socks5Address dst)
+fn void? encode_request(OutStream out, Socks5Command cmd, Socks5Address dst)
 {
 	char[3] head = { VERSION, cmd.wire, 0 };
 	io::write_all(out, &head)!;
@@ -342,7 +342,7 @@ fn Socks5Reply? decode_reply(InStream in, Allocator allocator)
 	char ver = in.read_byte()!;
 	if (ver != VERSION) return UNSUPPORTED_VERSION~;
 	char raw_code = in.read_byte()!;
-	ReplyCode code = reply_code_from_wire(raw_code)!;
+	Socks5ReplyCode code = reply_code_from_wire(raw_code)!;
 	char rsv = in.read_byte()!;
 	if (rsv != 0) return MALFORMED_MESSAGE~;
 	Socks5Address bnd = decode_address(in, allocator)!;

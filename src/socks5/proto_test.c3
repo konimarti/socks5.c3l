@@ -19,8 +19,8 @@ fn void test_decode_greeting_ok()
 	r.init(raw);
 	char[] methods = decode_greeting(&r, tmem)!!;
 	assert(methods.len == 2);
-	assert(methods[0] == Method.NO_AUTH.wire);
-	assert(methods[1] == Method.USERNAME_PASSWORD.wire);
+	assert(methods[0] == Socks5Method.NO_AUTH.wire);
+	assert(methods[1] == Socks5Method.USERNAME_PASSWORD.wire);
 	assert(methods_contains(methods, NO_AUTH));
 	assert(methods_contains(methods, USERNAME_PASSWORD));
 	assert(!methods_contains(methods, GSSAPI));
@@ -164,7 +164,7 @@ fn void test_decode_address_unsupported_type()
 
 fn void test_decode_address_domain_zero_length()
 {
-	char[] raw = { (char)AddressType.DOMAIN.wire, 0, 0, 0 };
+	char[] raw = { (char)Socks5AddressType.DOMAIN.wire, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_address(&r, tmem), NAME_TOO_LONG);
@@ -176,7 +176,7 @@ fn void test_request_round_trip_connect()
 	ByteWriter w;
 	w.init(tmem);
 	w.write_byte(VERSION)!!;
-	w.write_byte(Command.CONNECT.wire)!!;
+	w.write_byte(Socks5Command.CONNECT.wire)!!;
 	w.write_byte(0)!!; // RSV
 	encode_address(&w, dst)!!;
 
@@ -190,7 +190,7 @@ fn void test_request_round_trip_connect()
 
 fn void test_request_bad_version()
 {
-	char[] raw = { 0x04, Command.CONNECT.wire, 0, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { 0x04, Socks5Command.CONNECT.wire, 0, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_request(&r, tmem), UNSUPPORTED_VERSION);
@@ -198,7 +198,7 @@ fn void test_request_bad_version()
 
 fn void test_request_unsupported_command()
 {
-	char[] raw = { VERSION, 0x7f, 0, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { VERSION, 0x7f, 0, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_request(&r, tmem), UNSUPPORTED_COMMAND);
@@ -206,7 +206,7 @@ fn void test_request_unsupported_command()
 
 fn void test_request_bad_reserved_byte()
 {
-	char[] raw = { VERSION, Command.CONNECT.wire, 0x01, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { VERSION, Socks5Command.CONNECT.wire, 0x01, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_request(&r, tmem), MALFORMED_MESSAGE);
@@ -217,10 +217,10 @@ fn void test_encode_reply()
 	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
-	encode_reply(&w, ReplyCode.SUCCEEDED, bnd)!!;
+	encode_reply(&w, Socks5ReplyCode.SUCCEEDED, bnd)!!;
 	char[] got = w.array_view();
 	assert(got[0] == VERSION);
-	assert(got[1] == ReplyCode.SUCCEEDED.wire);
+	assert(got[1] == Socks5ReplyCode.SUCCEEDED.wire);
 	assert(got[2] == 0);
 }
 
@@ -238,13 +238,13 @@ fn void test_udp_header_round_trip()
 
 fn void test_udp_header_bad_reserved()
 {
-	char[] raw = { 0x01, 0x00, 0x00, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { 0x01, 0x00, 0x00, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	@expect_fault(decode_udp_header(raw, tmem), MALFORMED_MESSAGE);
 }
 
 fn void test_udp_header_fragmentation_unsupported()
 {
-	char[] raw = { 0x00, 0x00, 0x01, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { 0x00, 0x00, 0x01, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	@expect_fault(decode_udp_header(raw, tmem), UNSUPPORTED_FRAGMENTATION);
 }
 
@@ -254,21 +254,21 @@ fn void test_encode_greeting()
 {
 	ByteWriter w;
 	w.init(tmem);
-	Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
+	Socks5Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
 	encode_greeting(&w, methods[0..])!!;
 	char[] got = w.array_view();
 	assert(got.len == 4);
 	assert(got[0] == VERSION);
 	assert(got[1] == 2);
-	assert(got[2] == Method.NO_AUTH.wire);
-	assert(got[3] == Method.USERNAME_PASSWORD.wire);
+	assert(got[2] == Socks5Method.NO_AUTH.wire);
+	assert(got[3] == Socks5Method.USERNAME_PASSWORD.wire);
 }
 
 fn void test_encode_greeting_empty_rejected()
 {
 	ByteWriter w;
 	w.init(tmem);
-	Method[1] one = { GSSAPI };
+	Socks5Method[1] one = { GSSAPI };
 	@expect_fault(encode_greeting(&w, one[:0]), NAME_TOO_LONG);
 }
 
@@ -276,7 +276,7 @@ fn void test_encode_greeting_too_many_rejected()
 {
 	ByteWriter w;
 	w.init(tmem);
-	Method[256] many;
+	Socks5Method[256] many;
 	@expect_fault(encode_greeting(&w, many[0..]), NAME_TOO_LONG);
 }
 
@@ -284,7 +284,7 @@ fn void test_greeting_round_trip()
 {
 	ByteWriter w;
 	w.init(tmem);
-	Method[3] methods = { NO_AUTH, GSSAPI, USERNAME_PASSWORD };
+	Socks5Method[3] methods = { NO_AUTH, GSSAPI, USERNAME_PASSWORD };
 	encode_greeting(&w, methods[0..])!!;
 
 	ByteReader r;
@@ -298,16 +298,16 @@ fn void test_greeting_round_trip()
 
 fn void test_decode_method_selection_ok()
 {
-	char[] raw = { VERSION, Method.USERNAME_PASSWORD.wire };
+	char[] raw = { VERSION, Socks5Method.USERNAME_PASSWORD.wire };
 	ByteReader r;
 	r.init(raw);
-	Method m = decode_method_selection(&r)!!;
+	Socks5Method m = decode_method_selection(&r)!!;
 	assert(m == USERNAME_PASSWORD);
 }
 
 fn void test_decode_method_selection_no_acceptable()
 {
-	char[] raw = { VERSION, Method.NO_ACCEPTABLE.wire };
+	char[] raw = { VERSION, Socks5Method.NO_ACCEPTABLE.wire };
 	ByteReader r;
 	r.init(raw);
 	assert(decode_method_selection(&r)!! == NO_ACCEPTABLE);
@@ -409,7 +409,7 @@ fn void test_request_encode_round_trip_ipv4()
 	Socks5Address dst = { .atype = IPV4, .ipv4 = { 1, 2, 3, 4 }, .port = 8080 };
 	ByteWriter w;
 	w.init(tmem);
-	encode_request(&w, Command.CONNECT, dst)!!;
+	encode_request(&w, Socks5Command.CONNECT, dst)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
@@ -425,7 +425,7 @@ fn void test_request_encode_round_trip_domain_bind()
 	Socks5Address dst = { .atype = DOMAIN, .domain = "example.org", .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
-	encode_request(&w, Command.BIND, dst)!!;
+	encode_request(&w, Socks5Command.BIND, dst)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
@@ -441,7 +441,7 @@ fn void test_reply_round_trip()
 	Socks5Address bnd = { .atype = DOMAIN, .domain = "proxy.example", .port = 1080 };
 	ByteWriter w;
 	w.init(tmem);
-	encode_reply(&w, ReplyCode.SUCCEEDED, bnd)!!;
+	encode_reply(&w, Socks5ReplyCode.SUCCEEDED, bnd)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
@@ -457,7 +457,7 @@ fn void test_reply_round_trip_error_code()
 	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 0, 0, 0, 0 }, .port = 0 };
 	ByteWriter w;
 	w.init(tmem);
-	encode_reply(&w, ReplyCode.CONNECTION_REFUSED, bnd)!!;
+	encode_reply(&w, Socks5ReplyCode.CONNECTION_REFUSED, bnd)!!;
 
 	ByteReader r;
 	r.init(w.array_view());
@@ -469,7 +469,7 @@ fn void test_reply_round_trip_error_code()
 
 fn void test_decode_reply_bad_version()
 {
-	char[] raw = { 0x04, 0x00, 0x00, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { 0x04, 0x00, 0x00, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_reply(&r, tmem), UNSUPPORTED_VERSION);
@@ -477,7 +477,7 @@ fn void test_decode_reply_bad_version()
 
 fn void test_decode_reply_bad_reserved_byte()
 {
-	char[] raw = { VERSION, 0x00, 0x01, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { VERSION, 0x00, 0x01, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_reply(&r, tmem), MALFORMED_MESSAGE);
@@ -485,7 +485,7 @@ fn void test_decode_reply_bad_reserved_byte()
 
 fn void test_decode_reply_unknown_code()
 {
-	char[] raw = { VERSION, 0x7f, 0x00, (char)AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
+	char[] raw = { VERSION, 0x7f, 0x00, (char)Socks5AddressType.IPV4.wire, 0, 0, 0, 0, 0, 0 };
 	ByteReader r;
 	r.init(raw);
 	@expect_fault(decode_reply(&r, tmem), MALFORMED_MESSAGE);
@@ -499,11 +499,11 @@ fn void test_full_handshake_wire_round_trip()
 	w.init(tmem);
 
 	// client: greeting, userpass request, CONNECT request
-	Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
+	Socks5Method[2] methods = { NO_AUTH, USERNAME_PASSWORD };
 	encode_greeting(&w, methods[0..])!!;
 	encode_userpass_request(&w, "bob", "hunter2")!!;
 	Socks5Address dst = { .atype = DOMAIN, .domain = "example.com", .port = 443 };
-	encode_request(&w, Command.CONNECT, dst)!!;
+	encode_request(&w, Socks5Command.CONNECT, dst)!!;
 
 	// server: method selection, userpass reply, CONNECT reply
 	ByteWriter sw;
@@ -511,7 +511,7 @@ fn void test_full_handshake_wire_round_trip()
 	encode_method_selection(&sw, USERNAME_PASSWORD)!!;
 	encode_userpass_reply(&sw, true)!!;
 	Socks5Address bnd = { .atype = IPV4, .ipv4 = { 10, 0, 0, 1 }, .port = 40000 };
-	encode_reply(&sw, ReplyCode.SUCCEEDED, bnd)!!;
+	encode_reply(&sw, Socks5ReplyCode.SUCCEEDED, bnd)!!;
 
 	// play both directions through one reader each
 	ByteReader cr;

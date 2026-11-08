@@ -204,7 +204,7 @@ fn void handle_connection(Socks5Server* server, TcpSocket* conn)
 
 fn void? negotiate_and_serve(Socks5Server* server, TcpSocket* conn, InStream in)
 {
-	Method selected = negotiate_method(server, in, conn)!;
+	Socks5Method selected = negotiate_method(server, in, conn)!;
 	if (selected == USERNAME_PASSWORD) authenticate(server, in, conn)!;
 
 	// Unlike the greeting/auth faults above, an unsupported CMD or ATYP
@@ -229,10 +229,10 @@ fn void? negotiate_and_serve(Socks5Server* server, TcpSocket* conn, InStream in)
 	dispatch(conn, req);
 }
 
-fn Method? negotiate_method(Socks5Server* server, InStream in, OutStream out)
+fn Socks5Method? negotiate_method(Socks5Server* server, InStream in, OutStream out)
 {
 	char[] methods = proto::decode_greeting(in, tmem)!;
-	Method selected = NO_ACCEPTABLE;
+	Socks5Method selected = NO_ACCEPTABLE;
 	if (server.auth_check && proto::methods_contains(methods, USERNAME_PASSWORD))
 	{
 		selected = USERNAME_PASSWORD;

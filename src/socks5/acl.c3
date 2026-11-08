@@ -2,7 +2,7 @@
 // link-local address ranges — the classic open-proxy-to-internal-network
 // abuse vector ("SSRF via proxy": a client asks the proxy to connect
 // somewhere the proxy's own network can reach but the client couldn't).
-// RFC 1928 section 6 defines ReplyCode.NOT_ALLOWED (0x02) for exactly
+// RFC 1928 section 6 defines Socks5ReplyCode.NOT_ALLOWED (0x02) for exactly
 // this case. A single process-wide policy (configure()), not a per-
 // Socks5Server setting — this CLI only ever runs one Socks5Server per process, and
 // threading a policy parameter through every command handler signature

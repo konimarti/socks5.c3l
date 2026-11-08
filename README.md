@@ -27,13 +27,13 @@ else, built to be embedded in another C3 project or run as is.
 With [c3l](https://github.com/konimarti/c3l), the C3 package manager:
 
 ```sh
-c3l add github.com/<you>/socks5.c3l
+c3l add github.com/konimarti/socks5.c3l
 ```
 
 Or clone it directly and build with `c3c`:
 
 ```sh
-git clone https://github.com/<you>/socks5.c3l
+git clone https://github.com/konimarti/socks5.c3l
 cd socks5.c3l
 c3c build socks5-server
 c3c build socks5-client
@@ -82,6 +82,33 @@ intrusive than for an occasional function call.
 
 # Client: tunnel stdin/stdout through the proxy to a target.
 ./build/socks5-client 127.0.0.1:1080 example.com:80
+```
+
+### Manual testing with `nc`
+
+`socks5-client` relays stdin/stdout through the proxy, so it can stand in
+for one end of a plain `nc` session. With three terminals:
+
+```sh
+# Terminal 1: the target `nc` connects out to.
+nc -l 127.0.0.1 9000
+
+# Terminal 2: the proxy. 127.0.0.1 is a loopback address, so it needs
+# --allow-private; drop that flag when the target is a real host.
+./build/socks5-server 127.0.0.1 1080 --allow-no-auth --allow-private
+
+# Terminal 3: the client, tunnelling through the proxy to the target.
+./build/socks5-client 127.0.0.1:1080 127.0.0.1:9000
+```
+
+Typing in terminal 1 or terminal 3 now relays to the other, through the
+proxy, both ways. Terminal input is line buffered, so press Enter to send.
+
+With a username/password account instead of `--allow-no-auth`:
+
+```sh
+./build/socks5-server 127.0.0.1 1080 --user alice:secret
+./build/socks5-client 127.0.0.1:1080 127.0.0.1:9000 --user alice --pass secret
 ```
 
 ## Tests

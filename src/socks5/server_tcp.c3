@@ -6,7 +6,7 @@
 //   - Dial dst with tcp::connect (resolve the address per dst.atype:
 //     IPV4/IPV6 use dst.ipv4/dst.ipv6 directly; DOMAIN uses dst.domain,
 //     letting the stdlib resolver handle DNS).
-//   - On dial failure, map the error to the closest proto::ReplyCode
+//   - On dial failure, map the error to the closest proto::Socks5ReplyCode
 //     (HOST_UNREACHABLE / CONNECTION_REFUSED / NETWORK_UNREACHABLE /
 //     GENERAL_FAILURE) and proto::encode_reply it back to conn, then
 //     return without relaying.
@@ -43,9 +43,9 @@ import socks5::proto, socks5::relay, socks5::acl, socks5::sockaddr;
 const Duration BIND_TIMEOUT = (Duration)(30L * time::SEC);
 
 <*
- Maps a dial fault from tcp::connect to the closest SOCKS5 ReplyCode.
+ Maps a dial fault from tcp::connect to the closest SOCKS5 Socks5ReplyCode.
 *>
-fn proto::ReplyCode map_connect_error(fault err)
+fn proto::Socks5ReplyCode map_connect_error(fault err)
 {
 	switch (err)
 	{
@@ -182,7 +182,7 @@ fn void handle_connect(TcpSocket* conn, proto::Socks5Address dst)
 		TcpSocket? target = tcp::connect(host, (int)dst.port);
 		if (catch err = target)
 		{
-			proto::ReplyCode code = map_connect_error(err);
+			proto::Socks5ReplyCode code = map_connect_error(err);
 			(void)proto::encode_reply(conn, code, empty_addr);
 			return;
 		}
@@ -201,7 +201,7 @@ fn void handle_connect(TcpSocket* conn, proto::Socks5Address dst)
 		AddrInfo*? ai = net::addrinfo(dst.domain, (int)dst.port, os::AF_UNSPEC, os::SOCK_STREAM);
 		if (catch err = ai)
 		{
-			proto::ReplyCode code = map_connect_error(err);
+			proto::Socks5ReplyCode code = map_connect_error(err);
 			(void)proto::encode_reply(conn, code, empty_addr);
 			return;
 		}
@@ -258,7 +258,7 @@ fn void handle_connect(TcpSocket* conn, proto::Socks5Address dst)
 		if (!connected)
 		{
 			// Candidates were allowed, but dialing failed
-			proto::ReplyCode code = map_connect_error(last_connect_err);
+			proto::Socks5ReplyCode code = map_connect_error(last_connect_err);
 			(void)proto::encode_reply(conn, code, empty_addr);
 			return;
 		}

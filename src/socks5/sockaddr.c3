@@ -89,7 +89,7 @@ fn bool sockaddr_encode(InetAddress addr, ushort port, char[] out_sa, Socklen_t*
  handing straight to sendto/connect/bind. DOMAIN addresses need DNS
  resolution, not formatting, so they are out of scope here and this
  returns false for them — RFC 1928 replies carry IPv4/IPv6 in practice.
- @return "false for AddressType.DOMAIN, or if `out_sa` is too small"
+ @return "false for Socks5AddressType.DOMAIN, or if `out_sa` is too small"
 *>
 fn bool address_to_sockaddr(proto::Socks5Address addr, char[] out_sa, Socklen_t* out_len)
 {

@@ -41,20 +41,20 @@ fn void test_unsupported_command_replies_with_correct_code()
 	Thread t;
 	t.create(&run_handle_connection, &args)!!;
 
-	char[] greeting = { proto::VERSION, 1, Method.NO_AUTH.wire };
+	char[] greeting = { proto::VERSION, 1, Socks5Method.NO_AUTH.wire };
 	client.write(greeting)!!;
 	char[2] method_sel;
 	io::read_all(&client, &method_sel)!!;
-	assert(method_sel[1] == Method.NO_AUTH.wire);
+	assert(method_sel[1] == Socks5Method.NO_AUTH.wire);
 
 	// CMD = 0x09: not CONNECT/BIND/UDP_ASSOCIATE.
-	char[] req = { proto::VERSION, 0x09, 0, (char)AddressType.IPV4.wire, 127, 0, 0, 1, 0, 80 };
+	char[] req = { proto::VERSION, 0x09, 0, (char)Socks5AddressType.IPV4.wire, 127, 0, 0, 1, 0, 80 };
 	client.write(req)!!;
 
 	char[3] reply_head;
 	io::read_all(&client, &reply_head)!!;
 	assert(reply_head[0] == proto::VERSION);
-	assert(reply_head[1] == ReplyCode.COMMAND_NOT_SUPPORTED.wire);
+	assert(reply_head[1] == Socks5ReplyCode.COMMAND_NOT_SUPPORTED.wire);
 	assert(reply_head[2] == 0);
 
 	t.join()!!;
@@ -75,19 +75,19 @@ fn void test_unsupported_address_type_replies_with_correct_code()
 	Thread t;
 	t.create(&run_handle_connection, &args)!!;
 
-	char[] greeting = { proto::VERSION, 1, Method.NO_AUTH.wire };
+	char[] greeting = { proto::VERSION, 1, Socks5Method.NO_AUTH.wire };
 	client.write(greeting)!!;
 	char[2] method_sel;
 	io::read_all(&client, &method_sel)!!;
 
 	// ATYP = 0x02 is GSSAPI's method id, not a valid address type.
-	char[] req = { proto::VERSION, Command.CONNECT.wire, 0, 0x02 };
+	char[] req = { proto::VERSION, Socks5Command.CONNECT.wire, 0, 0x02 };
 	client.write(req)!!;
 
 	char[3] reply_head;
 	io::read_all(&client, &reply_head)!!;
 	assert(reply_head[0] == proto::VERSION);
-	assert(reply_head[1] == ReplyCode.ADDRESS_TYPE_NOT_SUPPORTED.wire);
+	assert(reply_head[1] == Socks5ReplyCode.ADDRESS_TYPE_NOT_SUPPORTED.wire);
 	assert(reply_head[2] == 0);
 
 	t.join()!!;

@@ -32,16 +32,16 @@ fn TcpSocket? dial(String proxy_host, int proxy_port)
  Offer `methods` in the greeting and read the server's method selection.
  @return? NO_ACCEPTABLE_METHODS : "server selected 0xff or a method we cannot perform"
 *>
-fn Method? negotiate_method(TcpSocket* sock, Method[] methods)
+fn Socks5Method? negotiate_method(TcpSocket* sock, Socks5Method[] methods)
 {
 	proto::encode_greeting(sock, methods)!;
-	Method selected = proto::decode_method_selection(sock)!;
+	Socks5Method selected = proto::decode_method_selection(sock)!;
 	// RFC 1928 section 3: the server picks from the methods WE offered.
 	// A server that returns something else (whether a known method we
 	// never offered, or an unrecognized byte) is non-compliant, not
 	// something to go along with.
 	bool offered = false;
-	foreach (Method m : methods) if (m == selected) offered = true;
+	foreach (Socks5Method m : methods) if (m == selected) offered = true;
 	if (!offered) return NO_ACCEPTABLE_METHODS~;
 	return selected;
 }
@@ -61,7 +61,7 @@ fn void? authenticate(TcpSocket* sock, String username, String password)
  Send a request and read the server's full reply (REP code + BND.ADDR).
  The reply's domain, if any, is allocated with tmem.
 *>
-fn proto::Socks5Reply? send_request(TcpSocket* sock, proto::Command cmd, proto::Socks5Address dst)
+fn proto::Socks5Reply? send_request(TcpSocket* sock, proto::Socks5Command cmd, proto::Socks5Address dst)
 {
 	proto::encode_request(sock, cmd, dst)!;
 	return proto::decode_reply(sock, tmem);
@@ -80,7 +80,7 @@ fn proto::Socks5Address make_address(String host, ushort port)
 	if (try ip = ip4)
 	{
 		return {
-			.atype = proto::AddressType.IPV4,
+			.atype = proto::Socks5AddressType.IPV4,
 			.ipv4 = { ip.ipv4.a, ip.ipv4.b, ip.ipv4.c, ip.ipv4.d },
 			.port = port,
 		};
@@ -88,11 +88,11 @@ fn proto::Socks5Address make_address(String host, ushort port)
 	InetAddress? ip6 = net::ipv6_from_str(host);
 	if (try ip = ip6)
 	{
-		proto::Socks5Address addr = { .atype = proto::AddressType.IPV6, .port = port };
+		proto::Socks5Address addr = { .atype = proto::Socks5AddressType.IPV6, .port = port };
 		mem::copy(&addr.ipv6, &ip.ipv6, 16);
 		return addr;
 	}
-	return { .atype = proto::AddressType.DOMAIN, .domain = host, .port = port };
+	return { .atype = proto::Socks5AddressType.DOMAIN, .domain = host, .port = port };
 }
 
 // Threading note: this uses `tmem` (directly, and indirectly via
@@ -133,18 +133,18 @@ fn TcpSocket? connect(String proxy_host, int proxy_port, String dst_host, ushort
 *>
 fn void? handshake(TcpSocket* sock, String username, String password)
 {
-	Method[2] offered = { NO_AUTH, USERNAME_PASSWORD };
-	Method[] methods = offered[:1];
+	Socks5Method[2] offered = { NO_AUTH, USERNAME_PASSWORD };
+	Socks5Method[] methods = offered[:1];
 	if (username.len > 0) methods = offered[0..];
-	Method selected = negotiate_method(sock, methods)!;
+	Socks5Method selected = negotiate_method(sock, methods)!;
 	if (selected == USERNAME_PASSWORD) authenticate(sock, username, password)!;
 }
 
 fn TcpSocket? connect_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Socks5Reply reply = send_request(sock, proto::Command.CONNECT, make_address(dst_host, dst_port))!;
-	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	proto::Socks5Reply reply = send_request(sock, proto::Socks5Command.CONNECT, make_address(dst_host, dst_port))!;
+	if (reply.code != proto::Socks5ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return *sock;
 }
 
@@ -186,8 +186,8 @@ fn Socks5BindListener? bind(String proxy_host, int proxy_port, String dst_host, 
 fn Socks5BindListener? bind_over(TcpSocket* sock, String dst_host, ushort dst_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Socks5Reply reply = send_request(sock, proto::Command.BIND, make_address(dst_host, dst_port))!;
-	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	proto::Socks5Reply reply = send_request(sock, proto::Socks5Command.BIND, make_address(dst_host, dst_port))!;
+	if (reply.code != proto::Socks5ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .control = *sock, .bound_addr = reply.bnd };
 }
 
@@ -216,7 +216,7 @@ struct Socks5BindConnection
 fn Socks5BindConnection? bind_wait(TcpSocket* sock)
 {
 	proto::Socks5Reply reply = proto::decode_reply(sock, tmem)!;
-	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	if (reply.code != proto::Socks5ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .socket = *sock, .peer_addr = reply.bnd };
 }
 
@@ -259,7 +259,7 @@ fn Socks5UdpAssociation? udp_associate(String proxy_host, int proxy_port, String
 fn Socks5UdpAssociation? udp_associate_over(TcpSocket* sock, String client_host, ushort client_port, String username, String password)
 {
 	handshake(sock, username, password)!;
-	proto::Socks5Reply reply = send_request(sock, proto::Command.UDP_ASSOCIATE, make_address(client_host, client_port))!;
-	if (reply.code != proto::ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
+	proto::Socks5Reply reply = send_request(sock, proto::Socks5Command.UDP_ASSOCIATE, make_address(client_host, client_port))!;
+	if (reply.code != proto::Socks5ReplyCode.SUCCEEDED) return REQUEST_FAILED~;
 	return { .control = *sock, .relay_addr = reply.bnd };
 }

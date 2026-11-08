@@ -55,7 +55,7 @@ struct FakeServerArgs
 	bool misbehave_unoffered_method; // reply GSSAPI regardless of what was offered
 	// captured request, for assertions in the test after join
 	bool got_request;
-	proto::Command got_cmd;
+	proto::Socks5Command got_cmd;
 	char[256] got_domain;
 	usz got_domain_len;
 	ushort got_port;
@@ -75,26 +75,26 @@ fn int fake_server(void* arg)
 	{
 	char[]? methods = proto::decode_greeting(&conn, tmem);
 	if (catch methods) return 2;
-	proto::Method selected = proto::Method.NO_ACCEPTABLE;
+	proto::Socks5Method selected = proto::Socks5Method.NO_ACCEPTABLE;
 	if (a.misbehave_unoffered_method)
 	{
-		selected = proto::Method.GSSAPI; // never offered by the test client
+		selected = proto::Socks5Method.GSSAPI; // never offered by the test client
 	}
 	else if (a.require_auth)
 	{
 		// This fake server demands username/password: fall through to
 		// NO_ACCEPTABLE rather than NO_AUTH if the client didn't offer it.
-		if (proto::methods_contains(methods, proto::Method.USERNAME_PASSWORD))
+		if (proto::methods_contains(methods, proto::Socks5Method.USERNAME_PASSWORD))
 		{
-			selected = proto::Method.USERNAME_PASSWORD;
+			selected = proto::Socks5Method.USERNAME_PASSWORD;
 		}
 	}
-	else if (proto::methods_contains(methods, proto::Method.NO_AUTH))
+	else if (proto::methods_contains(methods, proto::Socks5Method.NO_AUTH))
 	{
-		selected = proto::Method.NO_AUTH;
+		selected = proto::Socks5Method.NO_AUTH;
 	}
 	if (catch proto::encode_method_selection(&conn, selected)) return 3;
-	if (selected == proto::Method.USERNAME_PASSWORD)
+	if (selected == proto::Socks5Method.USERNAME_PASSWORD)
 	{
 		proto::Socks5UserpassRequest? req = proto::decode_userpass_request(&conn, tmem);
 		if (catch req) return 4;
@@ -111,15 +111,15 @@ fn int fake_server(void* arg)
 	a.got_request = true;
 	a.got_cmd = req.cmd;
 	a.got_port = req.dst.port;
-	if (req.dst.atype == proto::AddressType.DOMAIN)
+	if (req.dst.atype == proto::Socks5AddressType.DOMAIN)
 	{
 		usz n = req.dst.domain.len;
 		if (n > a.got_domain.len) n = a.got_domain.len;
 		a.got_domain_len = n;
 		for (usz i = 0; i < n; i++) a.got_domain[i] = req.dst.domain[i];
 	}
-	proto::ReplyCode code = a.accept ? proto::ReplyCode.SUCCEEDED : proto::ReplyCode.CONNECTION_REFUSED;
-	proto::Socks5Address bnd = { .atype = proto::AddressType.IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = 12345 };
+	proto::Socks5ReplyCode code = a.accept ? proto::Socks5ReplyCode.SUCCEEDED : proto::Socks5ReplyCode.CONNECTION_REFUSED;
+	proto::Socks5Address bnd = { .atype = proto::Socks5AddressType.IPV4, .ipv4 = { 127, 0, 0, 1 }, .port = 12345 };
 	if (catch proto::encode_reply(&conn, code, bnd)) return 7;
 	if (a.accept)
 	{
@@ -156,12 +156,12 @@ macro void @expect_fault(#expr, fault want)
 fn void test_make_address_ipv4_vs_domain()
 {
 	proto::Socks5Address a = make_address("192.168.0.1", 1080);
-	assert(a.atype == proto::AddressType.IPV4);
+	assert(a.atype == proto::Socks5AddressType.IPV4);
 	assert(a.ipv4[0] == 192 && a.ipv4[3] == 1);
 	assert(a.port == 1080);
 
 	proto::Socks5Address d = make_address("example.com", 80);
-	assert(d.atype == proto::AddressType.DOMAIN);
+	assert(d.atype == proto::Socks5AddressType.DOMAIN);
 	assert(d.domain == "example.com");
 	assert(d.port == 80);
 }
@@ -169,7 +169,7 @@ fn void test_make_address_ipv4_vs_domain()
 fn void test_make_address_ipv6()
 {
 	proto::Socks5Address a = make_address("::1", 443);
-	assert(a.atype == proto::AddressType.IPV6);
+	assert(a.atype == proto::Socks5AddressType.IPV6);
 	assert(a.ipv6[15] == 1);
 	assert(a.port == 443);
 }
@@ -189,7 +189,7 @@ fn void test_connect_no_auth_success()
 	t.join()!!;
 
 	assert(args.got_request);
-	assert(args.got_cmd == proto::Command.CONNECT);
+	assert(args.got_cmd == proto::Socks5Command.CONNECT);
 	assert(args.got_domain_len == "example.com".len);
 	assert((String)args.got_domain[:args.got_domain_len] == "example.com");
 	assert(args.got_port == 80);
@@ -211,7 +211,7 @@ fn void test_connect_username_password_success()
 	t.join()!!;
 
 	assert(args.got_request);
-	assert(args.got_cmd == proto::Command.CONNECT);
+	assert(args.got_cmd == proto::Socks5Command.CONNECT);
 	assert(args.got_domain_len == 0);
 	assert(args.got_port == 443);
 }

@@ -4,7 +4,7 @@
 // curl's, or ssh -D's) from the command line.
 module main;
 
-import std::io, std::net, std::net::tcp, std::thread;
+import std::io, std::net, std::net::tcp, std::thread, libc;
 import socks5::client;
 
 excuse { BAD_HOST_PORT }
@@ -29,6 +29,29 @@ fn void usage()
 	io::printn("usage: socks5-client <proxy-host:port> <target-host:port> [--user NAME --pass PASS]");
 }
 
+// Raw fd read/write instead of io::stdin()/io::stdout(): those go through
+// libc's buffered fread/fwrite, which (for a non-tty fd) blocks trying to
+// fill the entire request before returning, instead of handing back
+// whatever is already available. That stalls interactive relaying — a
+// typed line just sits until enough bytes accumulate to fill the buffer.
+fn sz? read_raw(libc::Fd fd, char[] buf)
+{
+	sz n = libc::read(fd, buf.ptr, buf.len);
+	if (n < 0) return io::GENERAL_ERROR~;
+	return n;
+}
+
+fn void? write_all_raw(libc::Fd fd, char[] buf)
+{
+	usz written;
+	while (written < buf.len)
+	{
+		sz n = libc::write(fd, &buf[written], buf.len - written);
+		if (n <= 0) return io::GENERAL_ERROR~;
+		written += (usz)n;
+	}
+}
+
 fn int pump_socket_to_stdout(void* arg)
 {
 	TcpSocket* sock = (TcpSocket*)arg;
@@ -38,7 +61,7 @@ fn int pump_socket_to_stdout(void* arg)
 		sz? n = sock.read(&buf);
 		if (catch n) break;
 		if (n == 0) break;
-		if (catch io::write_all(io::stdout(), buf[:n])) break;
+		if (catch write_all_raw(libc::STDOUT_FD, buf[:n])) break;
 	}
 	return 0;
 }
@@ -93,7 +116,7 @@ fn void main(String[] args)
 	char[4096] buf;
 	while (true)
 	{
-		sz? n = io::stdin().read(&buf);
+		sz? n = read_raw(libc::STDIN_FD, &buf);
 		if (catch n) break;
 		if (n == 0) break;
 		if (catch io::write_all(&sock, buf[:n])) break;
